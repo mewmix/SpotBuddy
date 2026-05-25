@@ -84,6 +84,7 @@ import androidx.core.view.WindowCompat
 import com.mewmix.spotbuddy.ui.theme.SpotBuddyTheme
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.math.max
@@ -138,6 +139,35 @@ private val MotivationMessages = listOf(
     "HOLD STRONG",
     "BREATHE AND LOCK IN",
     "STAY WITH IT"
+)
+
+private data class AnalyticsSummary(
+    val totalSessions: Int,
+    val totalSets: Int,
+    val totalDurationSeconds: Int,
+    val totalCooldownSeconds: Int,
+    val totalSkippedCooldownSeconds: Int,
+    val endedEarlyCount: Int,
+    val todaySets: Int,
+    val weekSets: Int,
+    val monthSets: Int,
+    val currentStreakDays: Int,
+    val lastWorkoutDate: String,
+    val exerciseTotals: List<ExerciseTotal>,
+    val dayTotals: List<DayTotal>
+)
+
+private data class ExerciseTotal(
+    val name: String,
+    val sets: Int,
+    val plannedSets: Int
+)
+
+private data class DayTotal(
+    val dayStart: Long,
+    val label: String,
+    val sets: Int,
+    val sessions: Int
 )
 
 @Composable
@@ -826,12 +856,151 @@ private fun HistoryScreen(
             return@AppScaffold
         }
 
+        AnalyticsPanel(sessions)
+        Spacer(Modifier.height(16.dp))
+
         HistoryChart(sessions)
         Spacer(Modifier.height(16.dp))
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             sessions.forEach { session ->
                 SessionCard(session = session, onDelete = { onDelete(session.id) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnalyticsPanel(sessions: List<SessionRecord>) {
+    val summary = remember(sessions) { buildAnalyticsSummary(sessions) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        MetricBand(
+            leftValue = summary.todaySets.toString(),
+            leftLabel = "sets today",
+            rightValue = summary.currentStreakDays.toString(),
+            rightLabel = "day streak"
+        )
+        MetricBand(
+            leftValue = summary.weekSets.toString(),
+            leftLabel = "sets this week",
+            rightValue = summary.monthSets.toString(),
+            rightLabel = "sets this month"
+        )
+        MetricBand(
+            leftValue = formatDuration(summary.totalDurationSeconds),
+            leftLabel = "training time",
+            rightValue = "${summary.endedEarlyCount}",
+            rightLabel = "ended early"
+        )
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        ) {
+            Column(Modifier.padding(18.dp)) {
+                Text("Date tracking", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Last workout: ${summary.lastWorkoutDate}",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "${summary.totalSessions} sessions | ${summary.totalSets} sets total",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                MiniDayGrid(summary.dayTotals)
+            }
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        ) {
+            Column(Modifier.padding(18.dp)) {
+                Text("Cooldown discipline", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(8.dp))
+                MetricBand(
+                    leftValue = "${summary.totalCooldownSeconds}s",
+                    leftLabel = "taken",
+                    rightValue = "${summary.totalSkippedCooldownSeconds}s",
+                    rightLabel = "skipped"
+                )
+            }
+        }
+
+        if (summary.exerciseTotals.isNotEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            ) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Exercise totals", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                    summary.exerciseTotals.forEach { total ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                total.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                "${total.sets}/${total.plannedSets} sets",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MiniDayGrid(days: List<DayTotal>) {
+    val maxSets = days.maxOfOrNull { it.sets }?.coerceAtLeast(1) ?: 1
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        days.forEach { day ->
+            val alpha = if (day.sets == 0) 0.16f else 0.35f + (day.sets.toFloat() / maxSets.toFloat()) * 0.65f
+            Column(
+                modifier = Modifier.weight(1f),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(34.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = alpha)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        if (day.sets > 0) day.sets.toString() else "",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    day.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
             }
         }
     }
@@ -1250,6 +1419,90 @@ private fun EmptySession(onEnd: () -> Unit) {
             Text("Back to Setup")
         }
     }
+}
+
+private fun buildAnalyticsSummary(sessions: List<SessionRecord>): AnalyticsSummary {
+    val now = System.currentTimeMillis()
+    val todayStart = startOfDay(now)
+    val weekStart = startOfWeek(now)
+    val monthStart = startOfMonth(now)
+    val byExercise = linkedMapOf<String, Pair<Int, Int>>()
+    val sessionsByDay = sessions.groupBy { startOfDay(it.startedAt) }
+
+    sessions.flatMap { it.exercises }.forEach { exercise ->
+        val current = byExercise[exercise.name] ?: (0 to 0)
+        byExercise[exercise.name] = (current.first + exercise.completedSets) to (current.second + exercise.plannedSets)
+    }
+
+    val dayFormatter = SimpleDateFormat("EEE", Locale.getDefault())
+    val dayTotals = (6 downTo 0).map { offset ->
+        val calendar = Calendar.getInstance().apply {
+            timeInMillis = todayStart
+            add(Calendar.DAY_OF_YEAR, -offset)
+        }
+        val dayStart = calendar.timeInMillis
+        val daySessions = sessionsByDay[dayStart].orEmpty()
+        DayTotal(
+            dayStart = dayStart,
+            label = dayFormatter.format(Date(dayStart)).take(1),
+            sets = daySessions.sumOf { it.completedSets },
+            sessions = daySessions.size
+        )
+    }
+
+    return AnalyticsSummary(
+        totalSessions = sessions.size,
+        totalSets = sessions.sumOf { it.completedSets },
+        totalDurationSeconds = sessions.sumOf { it.durationSeconds },
+        totalCooldownSeconds = sessions.sumOf { it.actualCooldownSeconds },
+        totalSkippedCooldownSeconds = sessions.sumOf { it.skippedCooldownSeconds },
+        endedEarlyCount = sessions.count { it.endedEarly },
+        todaySets = sessions.filter { it.startedAt >= todayStart }.sumOf { it.completedSets },
+        weekSets = sessions.filter { it.startedAt >= weekStart }.sumOf { it.completedSets },
+        monthSets = sessions.filter { it.startedAt >= monthStart }.sumOf { it.completedSets },
+        currentStreakDays = currentStreakDays(sessionsByDay.keys, todayStart),
+        lastWorkoutDate = sessions.maxByOrNull { it.startedAt }?.let { formatDate(it.startedAt) } ?: "None",
+        exerciseTotals = byExercise.map { (name, counts) ->
+            ExerciseTotal(name = name, sets = counts.first, plannedSets = counts.second)
+        }.sortedByDescending { it.sets },
+        dayTotals = dayTotals
+    )
+}
+
+private fun currentStreakDays(workoutDays: Set<Long>, todayStart: Long): Int {
+    if (workoutDays.isEmpty()) return 0
+    var streak = 0
+    val calendar = Calendar.getInstance().apply { timeInMillis = todayStart }
+    while (workoutDays.contains(calendar.timeInMillis)) {
+        streak += 1
+        calendar.add(Calendar.DAY_OF_YEAR, -1)
+    }
+    return streak
+}
+
+private fun startOfDay(timestamp: Long): Long {
+    return Calendar.getInstance().apply {
+        timeInMillis = timestamp
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+}
+
+private fun startOfWeek(timestamp: Long): Long {
+    return Calendar.getInstance().apply {
+        timeInMillis = startOfDay(timestamp)
+        firstDayOfWeek = Calendar.MONDAY
+        set(Calendar.DAY_OF_WEEK, firstDayOfWeek)
+    }.timeInMillis
+}
+
+private fun startOfMonth(timestamp: Long): Long {
+    return Calendar.getInstance().apply {
+        timeInMillis = startOfDay(timestamp)
+        set(Calendar.DAY_OF_MONTH, 1)
+    }.timeInMillis
 }
 
 private fun formatDate(timestamp: Long): String {
