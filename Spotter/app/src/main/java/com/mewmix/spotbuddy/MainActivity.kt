@@ -46,6 +46,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -170,6 +172,13 @@ private fun SpotBuddyApp() {
         if (index >= 0) items[index] = transform(items[index])
     }
 
+    fun moveItem(fromIndex: Int, direction: Int) {
+        val toIndex = (fromIndex + direction).coerceIn(items.indices)
+        if (fromIndex == toIndex) return
+        val moving = items.removeAt(fromIndex)
+        items.add(toIndex, moving)
+    }
+
     fun nextOpenIndex(from: Int = currentIndex): Int? {
         if (activeItems.isEmpty()) return null
         val start = from.coerceIn(0, activeItems.lastIndex)
@@ -289,6 +298,7 @@ private fun SpotBuddyApp() {
                     restSeconds = restSeconds,
                     onRestChanged = { restSeconds = it.coerceIn(0, 180) },
                     onItemChanged = ::updateItem,
+                    onMoveItem = ::moveItem,
                     onStart = ::startSession,
                     onHistory = { phase = SessionPhase.History }
                 )
@@ -346,6 +356,7 @@ private fun SetupScreen(
     restSeconds: Int,
     onRestChanged: (Int) -> Unit,
     onItemChanged: (ExerciseTemplate, (WorkoutItem) -> WorkoutItem) -> Unit,
+    onMoveItem: (Int, Int) -> Unit,
     onStart: () -> Unit,
     onHistory: () -> Unit
 ) {
@@ -390,12 +401,16 @@ private fun SetupScreen(
         Spacer(Modifier.height(12.dp))
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items.forEach { item ->
+            items.forEachIndexed { index, item ->
                 WorkoutSetupCard(
                     item = item,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < items.lastIndex,
                     onToggle = {
                         onItemChanged(item.template) { it.copy(selected = !it.selected) }
                     },
+                    onMoveUp = { onMoveItem(index, -1) },
+                    onMoveDown = { onMoveItem(index, 1) },
                     onSets = { delta ->
                         onItemChanged(item.template) { it.copy(sets = (it.sets + delta).coerceIn(1, 12)) }
                     },
@@ -441,7 +456,11 @@ private fun SetupScreen(
 @Composable
 private fun WorkoutSetupCard(
     item: WorkoutItem,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
     onToggle: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
     onSets: (Int) -> Unit,
     onAmount: (Int) -> Unit
 ) {
@@ -495,6 +514,36 @@ private fun WorkoutSetupCard(
             AnimatedVisibility(item.selected) {
                 Column {
                     Spacer(Modifier.height(14.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onMoveUp,
+                            enabled = canMoveUp,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Earlier", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        OutlinedButton(
+                            onClick = onMoveDown,
+                            enabled = canMoveDown,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Later", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
                     ControlStrip(
                         label = "Sets",
                         value = item.sets.toString(),
