@@ -856,10 +856,12 @@ private fun HistoryScreen(
             return@AppScaffold
         }
 
-        AnalyticsPanel(sessions)
+        val summary = remember(sessions) { buildAnalyticsSummary(sessions) }
+
+        AnalyticsPanel(summary)
         Spacer(Modifier.height(16.dp))
 
-        HistoryChart(sessions)
+        ChartsSection(sessions = sessions, summary = summary)
         Spacer(Modifier.height(16.dp))
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -871,9 +873,7 @@ private fun HistoryScreen(
 }
 
 @Composable
-private fun AnalyticsPanel(sessions: List<SessionRecord>) {
-    val summary = remember(sessions) { buildAnalyticsSummary(sessions) }
-
+private fun AnalyticsPanel(summary: AnalyticsSummary) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         MetricBand(
             leftValue = summary.todaySets.toString(),
@@ -962,6 +962,201 @@ private fun AnalyticsPanel(sessions: List<SessionRecord>) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ChartsSection(sessions: List<SessionRecord>, summary: AnalyticsSummary) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        DailyVolumeChart(summary.dayTotals)
+        HistoryChart(sessions)
+        DurationChart(sessions)
+        CooldownChart(sessions)
+        ExerciseTotalsChart(summary.exerciseTotals)
+    }
+}
+
+@Composable
+private fun DailyVolumeChart(days: List<DayTotal>) {
+    ChartCard(title = "7-day volume", caption = "Completed sets by workout date.") {
+        val maxSets = days.maxOfOrNull { it.sets }?.coerceAtLeast(1) ?: 1
+        Column {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(150.dp)
+            ) {
+                val gap = 8.dp.toPx()
+                val barWidth = ((size.width - gap * (days.size - 1)) / days.size).coerceAtLeast(8.dp.toPx())
+                days.forEachIndexed { index, day ->
+                    val ratio = day.sets.toFloat() / maxSets.toFloat()
+                    val barHeight = (size.height * ratio).coerceAtLeast(if (day.sets > 0) 8.dp.toPx() else 0f)
+                    val x = index * (barWidth + gap)
+                    drawRoundRect(
+                        color = Color(0xFF3E8D72),
+                        topLeft = Offset(x, size.height - barHeight),
+                        size = Size(barWidth, barHeight),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx(), 8.dp.toPx())
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                days.forEach { day ->
+                    Text(
+                        day.label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DurationChart(sessions: List<SessionRecord>) {
+    val chartSessions = sessions.take(8).asReversed()
+    ChartCard(title = "Session duration", caption = "Recent workout length in minutes.") {
+        LineChart(
+            values = chartSessions.map { it.durationSeconds / 60f },
+            color = Color(0xFF4E6FAE),
+            emptyLabel = "Finish more sessions to draw a trend."
+        )
+    }
+}
+
+@Composable
+private fun CooldownChart(sessions: List<SessionRecord>) {
+    val chartSessions = sessions.take(8).asReversed()
+    ChartCard(title = "Skipped cooldown", caption = "Skipped cooldown seconds per recent session.") {
+        BarChart(
+            values = chartSessions.map { it.skippedCooldownSeconds },
+            color = Color(0xFFD59A21),
+            minVisibleValue = 4f
+        )
+    }
+}
+
+@Composable
+private fun ExerciseTotalsChart(exerciseTotals: List<ExerciseTotal>) {
+    if (exerciseTotals.isEmpty()) return
+    val maxSets = exerciseTotals.maxOf { it.sets }.coerceAtLeast(1)
+    ChartCard(title = "Exercise mix", caption = "Total completed sets by movement.") {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            exerciseTotals.forEach { total ->
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            total.name,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            total.sets.toString(),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(12.dp)
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(total.sets.toFloat() / maxSets.toFloat())
+                                .height(12.dp)
+                                .clip(RoundedCornerShape(99.dp))
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChartCard(
+    title: String,
+    caption: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Column(Modifier.padding(18.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(Modifier.height(12.dp))
+            content()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                caption,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun BarChart(values: List<Int>, color: Color, minVisibleValue: Float = 0f) {
+    if (values.isEmpty()) {
+        Text("No chart data yet.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+    val maxValue = values.maxOrNull()?.coerceAtLeast(1) ?: 1
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+    ) {
+        val gap = 10.dp.toPx()
+        val barWidth = ((size.width - gap * (values.size - 1)) / values.size).coerceAtLeast(8.dp.toPx())
+        values.forEachIndexed { index, value ->
+            val ratio = value.toFloat() / maxValue.toFloat()
+            val barHeight = if (value == 0) 0f else (size.height * ratio).coerceAtLeast(minVisibleValue.dp.toPx())
+            val x = index * (barWidth + gap)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(x, size.height - barHeight),
+                size = Size(barWidth, barHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx(), 8.dp.toPx())
+            )
+        }
+    }
+}
+
+@Composable
+private fun LineChart(values: List<Float>, color: Color, emptyLabel: String) {
+    if (values.size < 2) {
+        Text(emptyLabel, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+    val maxValue = values.maxOrNull()?.coerceAtLeast(1f) ?: 1f
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+    ) {
+        val step = size.width / (values.size - 1)
+        val points = values.mapIndexed { index, value ->
+            Offset(index * step, size.height - (value / maxValue) * size.height)
+        }
+        points.zipWithNext().forEach { (start, end) ->
+            drawLine(color = color, start = start, end = end, strokeWidth = 5.dp.toPx(), cap = StrokeCap.Round)
+        }
+        points.forEach { point ->
+            drawCircle(color = color, radius = 6.dp.toPx(), center = point)
         }
     }
 }
