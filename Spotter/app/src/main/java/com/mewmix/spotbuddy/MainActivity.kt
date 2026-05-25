@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -36,12 +37,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -57,6 +61,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,15 +69,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import com.mewmix.spotbuddy.ui.theme.SpotBuddyTheme
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.max
 
 class MainActivity : ComponentActivity() {
@@ -108,7 +119,7 @@ private data class WorkoutItem(
     val completed: Int = 0
 )
 
-private enum class SessionPhase { Setup, Active, Rest, Complete }
+private enum class SessionPhase { Setup, Active, Rest, History, Complete }
 
 private val WorkoutCatalog = listOf(
     ExerciseTemplate("Pushups", "PUSH", ExerciseMode.Reps, 4, 15, 0, Color(0xFFE86F51)),
@@ -119,17 +130,34 @@ private val WorkoutCatalog = listOf(
     ExerciseTemplate("Lunges", "MOVE", ExerciseMode.Reps, 3, 12, 0, Color(0xFF2E9DA7))
 )
 
+private val MotivationMessages = listOf(
+    "DONT GIVE UP",
+    "YOU CAN DO IT",
+    "HOLD STRONG",
+    "BREATHE AND LOCK IN",
+    "STAY WITH IT"
+)
+
 @Composable
 private fun SpotBuddyApp() {
+    val context = LocalContext.current
+    val database = remember { SpotBuddyDatabase(context.applicationContext) }
+    var sessions by remember { mutableStateOf(database.getSessions()) }
     val items = remember {
         mutableStateListOf<WorkoutItem>().apply {
             addAll(WorkoutCatalog.map { WorkoutItem(it) })
         }
     }
+
     var phase by remember { mutableStateOf(SessionPhase.Setup) }
     var currentIndex by remember { mutableIntStateOf(0) }
     var restSeconds by remember { mutableIntStateOf(45) }
     var remainingSeconds by remember { mutableIntStateOf(45) }
+    var sessionStartedAt by remember { mutableLongStateOf(0L) }
+    var actualCooldownSeconds by remember { mutableIntStateOf(0) }
+    var skippedCooldowns by remember { mutableIntStateOf(0) }
+    var skippedCooldownSeconds by remember { mutableIntStateOf(0) }
+    var savedSessionId by remember { mutableLongStateOf(0L) }
 
     val activeItems = items.filter { it.selected && it.sets > 0 }
     val totalSets = activeItems.sumOf { it.sets }
@@ -151,6 +179,44 @@ private fun SpotBuddyApp() {
         return null
     }
 
+    fun startSession() {
+        items.indices.forEach { index -> items[index] = items[index].copy(completed = 0) }
+        currentIndex = 0
+        actualCooldownSeconds = 0
+        skippedCooldowns = 0
+        skippedCooldownSeconds = 0
+        savedSessionId = 0L
+        sessionStartedAt = System.currentTimeMillis()
+        phase = SessionPhase.Active
+    }
+
+    fun saveFinishedSession() {
+        if (savedSessionId != 0L || sessionStartedAt == 0L || totalSets == 0) return
+        val endedAt = System.currentTimeMillis()
+        val record = SessionRecord(
+            id = 0L,
+            startedAt = sessionStartedAt,
+            endedAt = endedAt,
+            durationSeconds = ((endedAt - sessionStartedAt) / 1000L).toInt().coerceAtLeast(0),
+            completedSets = completedSets,
+            plannedSets = totalSets,
+            actualCooldownSeconds = actualCooldownSeconds,
+            skippedCooldowns = skippedCooldowns,
+            skippedCooldownSeconds = skippedCooldownSeconds,
+            exercises = activeItems.map {
+                ExerciseSummary(
+                    name = it.template.name,
+                    completedSets = it.completed,
+                    plannedSets = it.sets,
+                    reps = it.reps,
+                    holdSeconds = it.holdSeconds
+                )
+            }
+        )
+        savedSessionId = database.insertSession(record)
+        sessions = database.getSessions()
+    }
+
     fun completeCurrentSet(startRest: Boolean) {
         val item = currentItem ?: return
         updateItem(item.template) { it.copy(completed = (it.completed + 1).coerceAtMost(it.sets)) }
@@ -170,8 +236,27 @@ private fun SpotBuddyApp() {
             remainingSeconds = restSeconds
             phase = SessionPhase.Rest
         } else {
+            skippedCooldowns += 1
+            skippedCooldownSeconds += restSeconds
             phase = SessionPhase.Active
         }
+    }
+
+    fun finishCooldown() {
+        actualCooldownSeconds += restSeconds
+        phase = SessionPhase.Active
+    }
+
+    fun skipCooldown() {
+        val taken = (restSeconds - remainingSeconds).coerceIn(0, restSeconds)
+        actualCooldownSeconds += taken
+        skippedCooldowns += 1
+        skippedCooldownSeconds += remainingSeconds
+        phase = SessionPhase.Active
+    }
+
+    LaunchedEffect(phase, completedSets, totalSets) {
+        if (phase == SessionPhase.Complete) saveFinishedSession()
     }
 
     Surface(
@@ -186,14 +271,12 @@ private fun SpotBuddyApp() {
             when (target) {
                 SessionPhase.Setup -> SetupScreen(
                     items = items,
+                    sessions = sessions,
                     restSeconds = restSeconds,
                     onRestChanged = { restSeconds = it.coerceIn(0, 180) },
                     onItemChanged = ::updateItem,
-                    onStart = {
-                        items.indices.forEach { index -> items[index] = items[index].copy(completed = 0) }
-                        currentIndex = 0
-                        phase = SessionPhase.Active
-                    }
+                    onStart = ::startSession,
+                    onHistory = { phase = SessionPhase.History }
                 )
 
                 SessionPhase.Active -> ActiveScreen(
@@ -212,19 +295,28 @@ private fun SpotBuddyApp() {
                     completedSets = completedSets,
                     totalSets = totalSets,
                     onTick = { remainingSeconds = (remainingSeconds - 1).coerceAtLeast(0) },
-                    onDone = { phase = SessionPhase.Active },
-                    onSkip = { phase = SessionPhase.Active }
+                    onDone = ::finishCooldown,
+                    onSkip = ::skipCooldown
+                )
+
+                SessionPhase.History -> HistoryScreen(
+                    sessions = sessions,
+                    onBack = { phase = SessionPhase.Setup },
+                    onDelete = { id ->
+                        database.deleteSession(id)
+                        sessions = database.getSessions()
+                    }
                 )
 
                 SessionPhase.Complete -> CompleteScreen(
                     completedSets = completedSets,
                     totalSets = totalSets,
-                    onAgain = {
-                        items.indices.forEach { index -> items[index] = items[index].copy(completed = 0) }
-                        currentIndex = 0
-                        phase = SessionPhase.Active
-                    },
-                    onEdit = { phase = SessionPhase.Setup }
+                    actualCooldownSeconds = actualCooldownSeconds,
+                    skippedCooldowns = skippedCooldowns,
+                    skippedCooldownSeconds = skippedCooldownSeconds,
+                    onAgain = ::startSession,
+                    onEdit = { phase = SessionPhase.Setup },
+                    onHistory = { phase = SessionPhase.History }
                 )
             }
         }
@@ -234,10 +326,12 @@ private fun SpotBuddyApp() {
 @Composable
 private fun SetupScreen(
     items: List<WorkoutItem>,
+    sessions: List<SessionRecord>,
     restSeconds: Int,
     onRestChanged: (Int) -> Unit,
     onItemChanged: (ExerciseTemplate, (WorkoutItem) -> WorkoutItem) -> Unit,
-    onStart: () -> Unit
+    onStart: () -> Unit,
+    onHistory: () -> Unit
 ) {
     val selectedCount = items.count { it.selected }
     val totalSets = items.filter { it.selected }.sumOf { it.sets }
@@ -251,9 +345,23 @@ private fun SetupScreen(
         MetricBand(
             leftValue = totalSets.toString(),
             leftLabel = "sets today",
-            rightValue = "${restSeconds}s",
-            rightLabel = "cooldown"
+            rightValue = sessions.size.toString(),
+            rightLabel = "saved sessions"
         )
+
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedButton(
+            onClick = onHistory,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Icon(Icons.Default.BarChart, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Review History", style = MaterialTheme.typography.labelLarge)
+        }
 
         Spacer(Modifier.height(20.dp))
 
@@ -356,7 +464,7 @@ private fun WorkoutSetupCard(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        if (item.template.mode == ExerciseMode.Timer) "Hold timer" else "${item.reps} reps per set",
+                        if (item.template.mode == ExerciseMode.Timer) "${item.holdSeconds}s hold" else "${item.reps} reps per set",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -407,6 +515,12 @@ private fun ActiveScreen(
     var timerSeconds by remember(item.template.name, item.completed) {
         mutableIntStateOf(item.holdSeconds)
     }
+    var motivationIndex by remember(item.template.name, item.completed) {
+        mutableIntStateOf(0)
+    }
+    var showMotivation by remember(item.template.name, item.completed) {
+        mutableStateOf(false)
+    }
 
     if (item.template.mode == ExerciseMode.Timer && !LocalInspectionMode.current) {
         LaunchedEffect(item.template.name, item.completed, timerSeconds) {
@@ -417,6 +531,15 @@ private fun ActiveScreen(
                 onCompleteSet()
             }
         }
+        LaunchedEffect(item.template.name, item.completed, timerSeconds) {
+            val elapsed = item.holdSeconds - timerSeconds
+            if (elapsed > 0 && elapsed % 10 == 0) {
+                motivationIndex = (motivationIndex + 1) % MotivationMessages.size
+                showMotivation = true
+                delay(1600)
+                showMotivation = false
+            }
+        }
     }
 
     val progress = if (item.template.mode == ExerciseMode.Timer) {
@@ -425,95 +548,105 @@ private fun ActiveScreen(
         completedSets.toFloat() / totalSets.toFloat().coerceAtLeast(1f)
     }
 
-    AppScaffold {
-        SessionTopBar(completedSets, totalSets, onEnd)
-        Spacer(Modifier.height(24.dp))
+    Box(Modifier.fillMaxSize()) {
+        AppScaffold {
+            SessionTopBar(completedSets, totalSets, onEnd)
+            Spacer(Modifier.height(24.dp))
 
-        FocusPanel(accent = item.template.accent) {
-            Text(
-                item.template.name,
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "Set ${item.completed + 1} of ${item.sets}",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(28.dp))
-
-            if (item.template.mode == ExerciseMode.Timer) {
-                TimerDial(
-                    seconds = timerSeconds,
-                    totalSeconds = item.holdSeconds,
-                    accent = item.template.accent
-                )
-                Spacer(Modifier.height(24.dp))
-                OutlinedButton(
-                    onClick = onCompleteSet,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(58.dp),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Text("Finish Hold", style = MaterialTheme.typography.titleMedium)
-                }
-            } else {
+            FocusPanel(accent = item.template.accent) {
                 Text(
-                    item.reps.toString(),
-                    style = MaterialTheme.typography.displayLarge,
-                    color = item.template.accent,
+                    item.template.name,
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
+                Spacer(Modifier.height(10.dp))
                 Text(
-                    "reps",
-                    style = MaterialTheme.typography.titleLarge,
+                    "Set ${item.completed + 1} of ${item.sets}",
+                    style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(28.dp))
-                Button(
-                    onClick = onCompleteSet,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(76.dp),
-                    shape = RoundedCornerShape(22.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = item.template.accent)
-                ) {
-                    Icon(Icons.Default.Check, contentDescription = null)
-                    Spacer(Modifier.width(10.dp))
-                    Text("Set Complete", style = MaterialTheme.typography.titleLarge)
+
+                if (item.template.mode == ExerciseMode.Timer) {
+                    TimerDial(
+                        seconds = timerSeconds,
+                        totalSeconds = item.holdSeconds,
+                        accent = item.template.accent
+                    )
+                    Spacer(Modifier.height(24.dp))
+                    OutlinedButton(
+                        onClick = onCompleteSet,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(58.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Finish Hold", style = MaterialTheme.typography.titleMedium)
+                    }
+                } else {
+                    Text(
+                        item.reps.toString(),
+                        style = MaterialTheme.typography.displayLarge,
+                        color = item.template.accent,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "reps",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(28.dp))
+                    Button(
+                        onClick = onCompleteSet,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(76.dp),
+                        shape = RoundedCornerShape(22.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = item.template.accent)
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = null)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Set Complete", style = MaterialTheme.typography.titleLarge)
+                    }
                 }
+            }
+
+            Spacer(Modifier.height(18.dp))
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(10.dp)
+                    .clip(RoundedCornerShape(99.dp)),
+                color = item.template.accent,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+
+            Spacer(Modifier.height(18.dp))
+            OutlinedButton(
+                onClick = onSkipRest,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("Complete and Skip Cooldown", style = MaterialTheme.typography.labelLarge)
             }
         }
 
-        Spacer(Modifier.height(18.dp))
-        LinearProgressIndicator(
-            progress = { progress },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(10.dp)
-                .clip(RoundedCornerShape(99.dp)),
-            color = item.template.accent,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-
-        Spacer(Modifier.height(18.dp))
-        OutlinedButton(
-            onClick = onSkipRest,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(16.dp)
+        AnimatedVisibility(
+            visible = showMotivation,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(220))
         ) {
-            Text("Complete and Skip Cooldown", style = MaterialTheme.typography.labelLarge)
+            MotivationOverlay(MotivationMessages[motivationIndex], item.template.accent)
         }
     }
 }
@@ -574,7 +707,166 @@ private fun RestScreen(
                     .height(64.dp),
                 shape = RoundedCornerShape(18.dp)
             ) {
+                Icon(Icons.Default.Timer, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
                 Text("Start Next Set", style = MaterialTheme.typography.titleMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryScreen(
+    sessions: List<SessionRecord>,
+    onBack: () -> Unit,
+    onDelete: (Long) -> Unit
+) {
+    AppScaffold {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 24.dp, bottom = 18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("History", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
+                Text("${sessions.size} saved sessions", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            ElevatedButton(onClick = onBack, shape = RoundedCornerShape(14.dp)) {
+                Icon(Icons.Default.Close, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Back")
+            }
+        }
+
+        if (sessions.isEmpty()) {
+            FocusPanel(accent = MaterialTheme.colorScheme.primary) {
+                Text(
+                    "No sessions saved yet",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Finish a workout and it will land here automatically.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            return@AppScaffold
+        }
+
+        HistoryChart(sessions)
+        Spacer(Modifier.height(16.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            sessions.forEach { session ->
+                SessionCard(session = session, onDelete = { onDelete(session.id) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryChart(sessions: List<SessionRecord>) {
+    val chartSessions = sessions.take(8).asReversed()
+    val maxSets = chartSessions.maxOfOrNull { it.completedSets }?.coerceAtLeast(1) ?: 1
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Column(Modifier.padding(18.dp)) {
+            Text("Completed sets", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(Modifier.height(12.dp))
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(150.dp)
+            ) {
+                val barGap = 10.dp.toPx()
+                val barWidth = ((size.width - barGap * (chartSessions.size - 1)) / chartSessions.size).coerceAtLeast(8.dp.toPx())
+                chartSessions.forEachIndexed { index, session ->
+                    val ratio = session.completedSets.toFloat() / maxSets.toFloat()
+                    val barHeight = size.height * ratio
+                    val x = index * (barWidth + barGap)
+                    drawRoundRect(
+                        color = Color(0xFFE86F51),
+                        topLeft = Offset(x, size.height - barHeight),
+                        size = Size(barWidth, barHeight),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx(), 8.dp.toPx())
+                    )
+                    if (session.skippedCooldowns > 0) {
+                        drawLine(
+                            color = Color(0xFFD59A21),
+                            start = Offset(x, size.height - barHeight - 6.dp.toPx()),
+                            end = Offset(x + barWidth, size.height - barHeight - 6.dp.toPx()),
+                            strokeWidth = 4.dp.toPx(),
+                            cap = StrokeCap.Round
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Gold marks sessions with skipped cooldown time.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun SessionCard(session: SessionRecord, onDelete: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(formatDate(session.startedAt), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+                    Text(
+                        "${session.completedSets}/${session.plannedSets} sets | ${formatDuration(session.durationSeconds)}",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete session", tint = MaterialTheme.colorScheme.primary)
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            MetricBand(
+                leftValue = "${session.actualCooldownSeconds}s",
+                leftLabel = "cooldown taken",
+                rightValue = "${session.skippedCooldownSeconds}s",
+                rightLabel = "cooldown skipped"
+            )
+
+            Spacer(Modifier.height(10.dp))
+            Text(
+                session.exercises.joinToString("  |  ") { "${it.name} ${it.completedSets}/${it.plannedSets}" },
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (session.skippedCooldowns > 0) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "${session.skippedCooldowns} cooldown skips tracked",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color(0xFFD59A21)
+                )
             }
         }
     }
@@ -584,8 +876,12 @@ private fun RestScreen(
 private fun CompleteScreen(
     completedSets: Int,
     totalSets: Int,
+    actualCooldownSeconds: Int,
+    skippedCooldowns: Int,
+    skippedCooldownSeconds: Int,
     onAgain: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onHistory: () -> Unit
 ) {
     AppScaffold {
         Spacer(Modifier.height(36.dp))
@@ -615,7 +911,24 @@ private fun CompleteScreen(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
             )
-            Spacer(Modifier.height(30.dp))
+            Spacer(Modifier.height(16.dp))
+            MetricBand(
+                leftValue = "${actualCooldownSeconds}s",
+                leftLabel = "cooldown taken",
+                rightValue = "${skippedCooldownSeconds}s",
+                rightLabel = "skipped"
+            )
+            if (skippedCooldowns > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "$skippedCooldowns cooldown skips saved",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color(0xFFD59A21),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            Spacer(Modifier.height(24.dp))
             Button(
                 onClick = onAgain,
                 modifier = Modifier
@@ -629,6 +942,18 @@ private fun CompleteScreen(
             }
             Spacer(Modifier.height(12.dp))
             OutlinedButton(
+                onClick = onHistory,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.BarChart, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Review History", style = MaterialTheme.typography.labelLarge)
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
                 onClick = onEdit,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -638,6 +963,24 @@ private fun CompleteScreen(
                 Text("Edit Workout", style = MaterialTheme.typography.labelLarge)
             }
         }
+    }
+}
+
+@Composable
+private fun MotivationOverlay(message: String, accent: Color) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(accent.copy(alpha = 0.96f))
+            .padding(26.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            message,
+            style = MaterialTheme.typography.displayLarge,
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -729,7 +1072,7 @@ private fun MetricBand(leftValue: String, leftLabel: String, rightValue: String,
 private fun Metric(value: String, label: String, modifier: Modifier = Modifier) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Text(value, style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
-        Text(label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
     }
 }
 
@@ -823,4 +1166,14 @@ private fun EmptySession(onEnd: () -> Unit) {
             Text("Back to Setup")
         }
     }
+}
+
+private fun formatDate(timestamp: Long): String {
+    return SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(timestamp))
+}
+
+private fun formatDuration(seconds: Int): String {
+    val minutes = seconds / 60
+    val remaining = seconds % 60
+    return if (minutes > 0) "${minutes}m ${remaining}s" else "${remaining}s"
 }
