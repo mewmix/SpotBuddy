@@ -157,6 +157,7 @@ private fun SpotBuddyApp() {
     var actualCooldownSeconds by remember { mutableIntStateOf(0) }
     var skippedCooldowns by remember { mutableIntStateOf(0) }
     var skippedCooldownSeconds by remember { mutableIntStateOf(0) }
+    var sessionEndedEarly by remember { mutableStateOf(false) }
     var savedSessionId by remember { mutableLongStateOf(0L) }
 
     val activeItems = items.filter { it.selected && it.sets > 0 }
@@ -185,6 +186,7 @@ private fun SpotBuddyApp() {
         actualCooldownSeconds = 0
         skippedCooldowns = 0
         skippedCooldownSeconds = 0
+        sessionEndedEarly = false
         savedSessionId = 0L
         sessionStartedAt = System.currentTimeMillis()
         phase = SessionPhase.Active
@@ -203,6 +205,7 @@ private fun SpotBuddyApp() {
             actualCooldownSeconds = actualCooldownSeconds,
             skippedCooldowns = skippedCooldowns,
             skippedCooldownSeconds = skippedCooldownSeconds,
+            endedEarly = sessionEndedEarly,
             exercises = activeItems.map {
                 ExerciseSummary(
                     name = it.template.name,
@@ -215,6 +218,17 @@ private fun SpotBuddyApp() {
         )
         savedSessionId = database.insertSession(record)
         sessions = database.getSessions()
+    }
+
+    fun finishEarly(fromCooldown: Boolean) {
+        if (fromCooldown) {
+            val taken = (restSeconds - remainingSeconds).coerceIn(0, restSeconds)
+            actualCooldownSeconds += taken
+            skippedCooldowns += 1
+            skippedCooldownSeconds += remainingSeconds
+        }
+        sessionEndedEarly = true
+        phase = SessionPhase.Complete
     }
 
     fun completeCurrentSet(startRest: Boolean) {
@@ -285,7 +299,7 @@ private fun SpotBuddyApp() {
                     totalSets = totalSets,
                     onCompleteSet = { completeCurrentSet(startRest = true) },
                     onSkipRest = { completeCurrentSet(startRest = false) },
-                    onEnd = { phase = SessionPhase.Setup }
+                    onEnd = { finishEarly(fromCooldown = false) }
                 )
 
                 SessionPhase.Rest -> RestScreen(
@@ -296,7 +310,8 @@ private fun SpotBuddyApp() {
                     totalSets = totalSets,
                     onTick = { remainingSeconds = (remainingSeconds - 1).coerceAtLeast(0) },
                     onDone = ::finishCooldown,
-                    onSkip = ::skipCooldown
+                    onSkip = ::skipCooldown,
+                    onEnd = { finishEarly(fromCooldown = true) }
                 )
 
                 SessionPhase.History -> HistoryScreen(
@@ -314,6 +329,7 @@ private fun SpotBuddyApp() {
                     actualCooldownSeconds = actualCooldownSeconds,
                     skippedCooldowns = skippedCooldowns,
                     skippedCooldownSeconds = skippedCooldownSeconds,
+                    endedEarly = sessionEndedEarly,
                     onAgain = ::startSession,
                     onEdit = { phase = SessionPhase.Setup },
                     onHistory = { phase = SessionPhase.History }
@@ -660,7 +676,8 @@ private fun RestScreen(
     totalSets: Int,
     onTick: () -> Unit,
     onDone: () -> Unit,
-    onSkip: () -> Unit
+    onSkip: () -> Unit,
+    onEnd: () -> Unit
 ) {
     if (!LocalInspectionMode.current) {
         LaunchedEffect(remainingSeconds) {
@@ -674,7 +691,7 @@ private fun RestScreen(
     }
 
     AppScaffold {
-        SessionTopBar(completedSets, totalSets, onSkip)
+        SessionTopBar(completedSets, totalSets, onEnd)
         Spacer(Modifier.height(26.dp))
 
         FocusPanel(accent = MaterialTheme.colorScheme.secondary) {
@@ -840,6 +857,13 @@ private fun SessionCard(session: SessionRecord, onDelete: () -> Unit) {
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (session.endedEarly) {
+                        Text(
+                            "Ended early",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
                 IconButton(onClick = onDelete) {
                     Icon(Icons.Default.Delete, contentDescription = "Delete session", tint = MaterialTheme.colorScheme.primary)
@@ -879,6 +903,7 @@ private fun CompleteScreen(
     actualCooldownSeconds: Int,
     skippedCooldowns: Int,
     skippedCooldownSeconds: Int,
+    endedEarly: Boolean,
     onAgain: () -> Unit,
     onEdit: () -> Unit,
     onHistory: () -> Unit
@@ -897,7 +922,7 @@ private fun CompleteScreen(
             }
             Spacer(Modifier.height(24.dp))
             Text(
-                "Session Complete",
+                if (endedEarly) "Workout Ended" else "Session Complete",
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center,
@@ -905,12 +930,22 @@ private fun CompleteScreen(
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "$completedSets of $totalSets sets finished",
+                if (endedEarly) "$completedSets of $totalSets sets saved" else "$completedSets of $totalSets sets finished",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
             )
+            if (endedEarly) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Marked ended early",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             Spacer(Modifier.height(16.dp))
             MetricBand(
                 leftValue = "${actualCooldownSeconds}s",

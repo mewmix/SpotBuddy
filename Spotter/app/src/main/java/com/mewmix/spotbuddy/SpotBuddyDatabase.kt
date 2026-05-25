@@ -24,11 +24,12 @@ data class SessionRecord(
     val actualCooldownSeconds: Int,
     val skippedCooldowns: Int,
     val skippedCooldownSeconds: Int,
+    val endedEarly: Boolean,
     val exercises: List<ExerciseSummary>
 )
 
 class SpotBuddyDatabase(context: Context) :
-    SQLiteOpenHelper(context, "spotbuddy.db", null, 1) {
+    SQLiteOpenHelper(context, "spotbuddy.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -43,6 +44,7 @@ class SpotBuddyDatabase(context: Context) :
                 actual_cooldown_seconds INTEGER NOT NULL,
                 skipped_cooldowns INTEGER NOT NULL,
                 skipped_cooldown_seconds INTEGER NOT NULL,
+                ended_early INTEGER NOT NULL DEFAULT 0,
                 exercises_json TEXT NOT NULL
             )
             """.trimIndent()
@@ -50,8 +52,9 @@ class SpotBuddyDatabase(context: Context) :
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS sessions")
-        onCreate(db)
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE sessions ADD COLUMN ended_early INTEGER NOT NULL DEFAULT 0")
+        }
     }
 
     fun insertSession(record: SessionRecord): Long {
@@ -64,6 +67,7 @@ class SpotBuddyDatabase(context: Context) :
             put("actual_cooldown_seconds", record.actualCooldownSeconds)
             put("skipped_cooldowns", record.skippedCooldowns)
             put("skipped_cooldown_seconds", record.skippedCooldownSeconds)
+            put("ended_early", if (record.endedEarly) 1 else 0)
             put("exercises_json", encodeExercises(record.exercises))
         }
         return writableDatabase.insert("sessions", null, values)
@@ -91,6 +95,7 @@ class SpotBuddyDatabase(context: Context) :
                     actualCooldownSeconds = cursor.getInt(cursor.getColumnIndexOrThrow("actual_cooldown_seconds")),
                     skippedCooldowns = cursor.getInt(cursor.getColumnIndexOrThrow("skipped_cooldowns")),
                     skippedCooldownSeconds = cursor.getInt(cursor.getColumnIndexOrThrow("skipped_cooldown_seconds")),
+                    endedEarly = cursor.getInt(cursor.getColumnIndexOrThrow("ended_early")) == 1,
                     exercises = decodeExercises(cursor.getString(cursor.getColumnIndexOrThrow("exercises_json")))
                 )
             }
