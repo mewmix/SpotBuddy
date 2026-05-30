@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -122,7 +123,7 @@ private data class WorkoutItem(
     val completed: Int = 0
 )
 
-private enum class SessionPhase { Setup, Active, Rest, History, Complete }
+private enum class SessionPhase { Setup, Active, Rest, History, ManualEntry, Complete }
 
 private val WorkoutCatalog = listOf(
     ExerciseTemplate("Pushups", "PUSH", ExerciseMode.Reps, 4, 15, 0, Color(0xFFE86F51)),
@@ -153,6 +154,9 @@ private data class AnalyticsSummary(
     val monthSets: Int,
     val currentStreakDays: Int,
     val lastWorkoutDate: String,
+    val lifetime: PeriodAnalytics,
+    val weekly: PeriodAnalytics,
+    val monthly: PeriodAnalytics,
     val exerciseTotals: List<ExerciseTotal>,
     val dayTotals: List<DayTotal>
 )
@@ -170,32 +174,118 @@ private data class DayTotal(
     val sessions: Int
 )
 
+private data class ManualExerciseCount(
+    val template: ExerciseTemplate,
+    val sets: Int = 0
+)
+
+private data class PeriodAnalytics(
+    val label: String,
+    val sessions: Int,
+    val sets: Int,
+    val durationSeconds: Int,
+    val cooldownSeconds: Int,
+    val skippedCooldownSeconds: Int
+)
+
 @Composable
 private fun SpotBuddyApp() {
     val context = LocalContext.current
     val database = remember { SpotBuddyDatabase(context.applicationContext) }
+    val preferences = remember { SpotBuddyPreferences(context.applicationContext) }
+    val savedState = remember { preferences.load() }
     var sessions by remember { mutableStateOf(database.getSessions()) }
     val items = remember {
         mutableStateListOf<WorkoutItem>().apply {
-            addAll(WorkoutCatalog.map { WorkoutItem(it) })
+            val savedByName = savedState?.items.orEmpty().associateBy { it.name }
+            val orderedTemplates = buildList {
+                savedState?.items.orEmpty().forEach { saved ->
+                    WorkoutCatalog.firstOrNull { it.name == saved.name }?.let(::add)
+                }
+                WorkoutCatalog.filterNot { template -> any { it.name == template.name } }.forEach(::add)
+            }
+            addAll(
+                orderedTemplates.map { template ->
+                    val saved = savedByName[template.name]
+                    WorkoutItem(
+                        template = template,
+                        selected = saved?.selected ?: true,
+                        sets = saved?.sets ?: template.defaultSets,
+                        reps = saved?.reps ?: template.defaultReps,
+                        holdSeconds = saved?.holdSeconds ?: template.defaultHoldSeconds,
+                        completed = saved?.completed ?: 0
+                    )
+                }
+            )
         }
     }
 
-    var phase by remember { mutableStateOf(SessionPhase.Setup) }
-    var currentIndex by remember { mutableIntStateOf(0) }
-    var restSeconds by remember { mutableIntStateOf(45) }
-    var remainingSeconds by remember { mutableIntStateOf(45) }
-    var sessionStartedAt by remember { mutableLongStateOf(0L) }
-    var actualCooldownSeconds by remember { mutableIntStateOf(0) }
-    var skippedCooldowns by remember { mutableIntStateOf(0) }
-    var skippedCooldownSeconds by remember { mutableIntStateOf(0) }
-    var sessionEndedEarly by remember { mutableStateOf(false) }
+    val loadedPhase = savedState?.phase?.let { phaseName ->
+        SessionPhase.entries.firstOrNull { it.name == phaseName }
+    }?.takeIf { it != SessionPhase.ManualEntry } ?: SessionPhase.Setup
+    var phase by remember { mutableStateOf(loadedPhase) }
+    var currentIndex by remember { mutableIntStateOf(savedState?.currentIndex ?: 0) }
+    var restSeconds by remember { mutableIntStateOf(savedState?.restSeconds ?: 45) }
+    var remainingSeconds by remember { mutableIntStateOf(savedState?.remainingSeconds ?: 45) }
+    var sessionStartedAt by remember { mutableLongStateOf(savedState?.sessionStartedAt ?: 0L) }
+    var actualCooldownSeconds by remember { mutableIntStateOf(savedState?.actualCooldownSeconds ?: 0) }
+    var skippedCooldowns by remember { mutableIntStateOf(savedState?.skippedCooldowns ?: 0) }
+    var skippedCooldownSeconds by remember { mutableIntStateOf(savedState?.skippedCooldownSeconds ?: 0) }
+    var sessionEndedEarly by remember { mutableStateOf(savedState?.sessionEndedEarly ?: false) }
     var savedSessionId by remember { mutableLongStateOf(0L) }
+    val manualItems = remember {
+        mutableStateListOf<ManualExerciseCount>().apply {
+            addAll(WorkoutCatalog.map { ManualExerciseCount(it) })
+        }
+    }
+    var manualDayOffset by remember { mutableIntStateOf(0) }
+    var manualSkipCooldown by remember { mutableStateOf(false) }
 
     val activeItems = items.filter { it.selected && it.sets > 0 }
     val totalSets = activeItems.sumOf { it.sets }
     val completedSets = activeItems.sumOf { it.completed }
     val currentItem = activeItems.getOrNull(currentIndex.coerceIn(0, max(activeItems.lastIndex, 0)))
+
+    fun persistAppState(targetPhase: SessionPhase = phase) {
+        preferences.save(
+            SavedAppState(
+                items = items.map {
+                    SavedWorkoutItem(
+                        name = it.template.name,
+                        selected = it.selected,
+                        sets = it.sets,
+                        reps = it.reps,
+                        holdSeconds = it.holdSeconds,
+                        completed = it.completed
+                    )
+                },
+                phase = targetPhase.name,
+                currentIndex = currentIndex,
+                restSeconds = restSeconds,
+                remainingSeconds = remainingSeconds,
+                sessionStartedAt = sessionStartedAt,
+                actualCooldownSeconds = actualCooldownSeconds,
+                skippedCooldowns = skippedCooldowns,
+                skippedCooldownSeconds = skippedCooldownSeconds,
+                sessionEndedEarly = sessionEndedEarly
+            )
+        )
+    }
+
+    LaunchedEffect(
+        items.toList(),
+        phase,
+        currentIndex,
+        restSeconds,
+        remainingSeconds,
+        sessionStartedAt,
+        actualCooldownSeconds,
+        skippedCooldowns,
+        skippedCooldownSeconds,
+        sessionEndedEarly
+    ) {
+        persistAppState()
+    }
 
     fun updateItem(template: ExerciseTemplate, transform: (WorkoutItem) -> WorkoutItem) {
         val index = items.indexOfFirst { it.template == template }
@@ -257,6 +347,7 @@ private fun SpotBuddyApp() {
         )
         savedSessionId = database.insertSession(record)
         sessions = database.getSessions()
+        sessionStartedAt = 0L
     }
 
     fun finishEarly(fromCooldown: Boolean) {
@@ -308,6 +399,49 @@ private fun SpotBuddyApp() {
         phase = SessionPhase.Active
     }
 
+    fun addManualSession() {
+        val selected = manualItems.filter { it.sets > 0 }
+        if (selected.isEmpty()) return
+        val calendar = Calendar.getInstance().apply {
+            add(Calendar.DAY_OF_YEAR, manualDayOffset)
+            set(Calendar.HOUR_OF_DAY, 12)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val startedAt = calendar.timeInMillis
+        val cooldown = if (manualSkipCooldown) 0 else restSeconds
+        val skipped = if (manualSkipCooldown) restSeconds else 0
+        database.insertSession(
+            SessionRecord(
+                id = 0L,
+                startedAt = startedAt,
+                endedAt = startedAt,
+                durationSeconds = 0,
+                completedSets = selected.sumOf { it.sets },
+                plannedSets = selected.sumOf { it.sets },
+                actualCooldownSeconds = cooldown,
+                skippedCooldowns = if (manualSkipCooldown) 1 else 0,
+                skippedCooldownSeconds = skipped,
+                endedEarly = false,
+                exercises = selected.map {
+                    ExerciseSummary(
+                        name = it.template.name,
+                        completedSets = it.sets,
+                        plannedSets = it.sets,
+                        reps = it.template.defaultReps,
+                        holdSeconds = it.template.defaultHoldSeconds
+                    )
+                }
+            )
+        )
+        sessions = database.getSessions()
+        manualItems.indices.forEach { index -> manualItems[index] = manualItems[index].copy(sets = 0) }
+        manualDayOffset = 0
+        manualSkipCooldown = false
+        phase = SessionPhase.History
+    }
+
     LaunchedEffect(phase, completedSets, totalSets) {
         if (phase == SessionPhase.Complete) saveFinishedSession()
     }
@@ -357,10 +491,30 @@ private fun SpotBuddyApp() {
                 SessionPhase.History -> HistoryScreen(
                     sessions = sessions,
                     onBack = { phase = SessionPhase.Setup },
+                    onAddHistorical = { phase = SessionPhase.ManualEntry },
                     onDelete = { id ->
                         database.deleteSession(id)
                         sessions = database.getSessions()
                     }
+                )
+
+                SessionPhase.ManualEntry -> ManualEntryScreen(
+                    items = manualItems,
+                    dayOffset = manualDayOffset,
+                    skipCooldown = manualSkipCooldown,
+                    restSeconds = restSeconds,
+                    onBack = { phase = SessionPhase.History },
+                    onDayOffsetChanged = { manualDayOffset = it.coerceIn(-365, 0) },
+                    onSkipCooldownChanged = { manualSkipCooldown = it },
+                    onSetsChanged = { template, delta ->
+                        val index = manualItems.indexOfFirst { it.template == template }
+                        if (index >= 0) {
+                            manualItems[index] = manualItems[index].copy(
+                                sets = (manualItems[index].sets + delta).coerceIn(0, 200)
+                            )
+                        }
+                    },
+                    onSave = ::addManualSession
                 )
 
                 SessionPhase.Complete -> CompleteScreen(
@@ -812,9 +966,127 @@ private fun RestScreen(
 }
 
 @Composable
+private fun ManualEntryScreen(
+    items: List<ManualExerciseCount>,
+    dayOffset: Int,
+    skipCooldown: Boolean,
+    restSeconds: Int,
+    onBack: () -> Unit,
+    onDayOffsetChanged: (Int) -> Unit,
+    onSkipCooldownChanged: (Boolean) -> Unit,
+    onSetsChanged: (ExerciseTemplate, Int) -> Unit,
+    onSave: () -> Unit
+) {
+    val totalSets = items.sumOf { it.sets }
+    val dateLabel = manualDateLabel(dayOffset)
+
+    AppScaffold {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 24.dp, bottom = 18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Add History", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
+                Text(dateLabel, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            ElevatedButton(onClick = onBack, shape = RoundedCornerShape(14.dp)) {
+                Icon(Icons.Default.Close, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Back")
+            }
+        }
+
+        MetricBand(
+            leftValue = totalSets.toString(),
+            leftLabel = "sets to add",
+            rightValue = if (skipCooldown) "${restSeconds}s" else "0s",
+            rightLabel = "cooldown skipped"
+        )
+
+        Spacer(Modifier.height(14.dp))
+
+        ControlStrip(
+            label = "Workout date",
+            value = dateLabel,
+            onMinus = { onDayOffsetChanged(dayOffset - 1) },
+            onPlus = { onDayOffsetChanged(dayOffset + 1) }
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onSkipCooldownChanged(!skipCooldown) },
+            shape = RoundedCornerShape(18.dp),
+            color = if (skipCooldown) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, if (skipCooldown) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(if (skipCooldown) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (skipCooldown) Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Cooldown skipped", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                    Text("Adds skipped cooldown seconds to analytics", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            items.forEach { item ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, item.template.accent.copy(alpha = 0.65f))
+                ) {
+                    ControlStrip(
+                        label = item.template.name,
+                        value = item.sets.toString(),
+                        onMinus = { onSetsChanged(item.template, -1) },
+                        onPlus = { onSetsChanged(item.template, 1) }
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        Button(
+            onClick = onSave,
+            enabled = totalSets > 0,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Icon(Icons.Default.Check, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Save Historical Session", style = MaterialTheme.typography.titleMedium)
+        }
+    }
+}
+
+@Composable
 private fun HistoryScreen(
     sessions: List<SessionRecord>,
     onBack: () -> Unit,
+    onAddHistorical: () -> Unit,
     onDelete: (Long) -> Unit
 ) {
     AppScaffold {
@@ -834,6 +1106,20 @@ private fun HistoryScreen(
                 Text("Back")
             }
         }
+
+        OutlinedButton(
+            onClick = onAddHistorical,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Icon(Icons.Default.Edit, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Add Historical Counts", style = MaterialTheme.typography.labelLarge)
+        }
+
+        Spacer(Modifier.height(16.dp))
 
         if (sessions.isEmpty()) {
             FocusPanel(accent = MaterialTheme.colorScheme.primary) {
@@ -893,6 +1179,10 @@ private fun AnalyticsPanel(summary: AnalyticsSummary) {
             rightValue = "${summary.endedEarlyCount}",
             rightLabel = "ended early"
         )
+
+        PeriodAnalyticsCard(summary.lifetime)
+        PeriodAnalyticsCard(summary.weekly)
+        PeriodAnalyticsCard(summary.monthly)
 
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -962,6 +1252,34 @@ private fun AnalyticsPanel(summary: AnalyticsSummary) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PeriodAnalyticsCard(period: PeriodAnalytics) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Column(Modifier.padding(18.dp)) {
+            Text(period.label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(Modifier.height(10.dp))
+            MetricBand(
+                leftValue = period.sessions.toString(),
+                leftLabel = "sessions",
+                rightValue = period.sets.toString(),
+                rightLabel = "sets"
+            )
+            Spacer(Modifier.height(10.dp))
+            MetricBand(
+                leftValue = formatDuration(period.durationSeconds),
+                leftLabel = "duration",
+                rightValue = "${period.skippedCooldownSeconds}s",
+                rightLabel = "skipped cooldown"
+            )
         }
     }
 }
@@ -1623,6 +1941,8 @@ private fun buildAnalyticsSummary(sessions: List<SessionRecord>): AnalyticsSumma
     val monthStart = startOfMonth(now)
     val byExercise = linkedMapOf<String, Pair<Int, Int>>()
     val sessionsByDay = sessions.groupBy { startOfDay(it.startedAt) }
+    val weeklySessions = sessions.filter { it.startedAt >= weekStart }
+    val monthlySessions = sessions.filter { it.startedAt >= monthStart }
 
     sessions.flatMap { it.exercises }.forEach { exercise ->
         val current = byExercise[exercise.name] ?: (0 to 0)
@@ -1657,10 +1977,24 @@ private fun buildAnalyticsSummary(sessions: List<SessionRecord>): AnalyticsSumma
         monthSets = sessions.filter { it.startedAt >= monthStart }.sumOf { it.completedSets },
         currentStreakDays = currentStreakDays(sessionsByDay.keys, todayStart),
         lastWorkoutDate = sessions.maxByOrNull { it.startedAt }?.let { formatDate(it.startedAt) } ?: "None",
+        lifetime = buildPeriodAnalytics("Lifetime", sessions),
+        weekly = buildPeriodAnalytics("This week", weeklySessions),
+        monthly = buildPeriodAnalytics("This month", monthlySessions),
         exerciseTotals = byExercise.map { (name, counts) ->
             ExerciseTotal(name = name, sets = counts.first, plannedSets = counts.second)
         }.sortedByDescending { it.sets },
         dayTotals = dayTotals
+    )
+}
+
+private fun buildPeriodAnalytics(label: String, sessions: List<SessionRecord>): PeriodAnalytics {
+    return PeriodAnalytics(
+        label = label,
+        sessions = sessions.size,
+        sets = sessions.sumOf { it.completedSets },
+        durationSeconds = sessions.sumOf { it.durationSeconds },
+        cooldownSeconds = sessions.sumOf { it.actualCooldownSeconds },
+        skippedCooldownSeconds = sessions.sumOf { it.skippedCooldownSeconds }
     )
 }
 
@@ -1698,6 +2032,17 @@ private fun startOfMonth(timestamp: Long): Long {
         timeInMillis = startOfDay(timestamp)
         set(Calendar.DAY_OF_MONTH, 1)
     }.timeInMillis
+}
+
+private fun manualDateLabel(dayOffset: Int): String {
+    val calendar = Calendar.getInstance().apply {
+        add(Calendar.DAY_OF_YEAR, dayOffset)
+    }
+    return when (dayOffset) {
+        0 -> "Today"
+        -1 -> "Yesterday"
+        else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(calendar.time)
+    }
 }
 
 private fun formatDate(timestamp: Long): String {
