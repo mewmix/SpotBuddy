@@ -38,6 +38,7 @@ History includes two export paths:
 
 - Export creates a SpotBuddy JSON backup for app-to-app migration.
 - Export CSV creates a spreadsheet-friendly workout history file with one row per exercise per session.
+- CSV In imports SpotBuddy CSV history rows and merges them into the local history database without changing saved workout preferences.
 
 ## Release Signing
 

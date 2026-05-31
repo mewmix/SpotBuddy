@@ -62,4 +62,46 @@ class SpotBuddyCoreTest {
         assert(csv.contains("\"Pushups, wide\",2,3,12,0"))
         assert(csv.endsWith("\n"))
     }
+
+    @Test
+    fun csvImportRestoresExportedSessions() {
+        val original = SessionRecord(
+            id = 9L,
+            startedAt = 1_700_010_000_000L,
+            endedAt = 1_700_010_300_000L,
+            durationSeconds = 300,
+            completedSets = 5,
+            plannedSets = 6,
+            actualCooldownSeconds = 90,
+            skippedCooldowns = 1,
+            skippedCooldownSeconds = 45,
+            endedEarly = false,
+            exercises = listOf(
+                ExerciseSummary("Pushups", 3, 3, 15, 0),
+                ExerciseSummary("Planks", 2, 3, 0, 45)
+            )
+        )
+
+        val imported = SpotBuddyCsv.decodeSessions(SpotBuddyCsv.encodeSessions(listOf(original)))
+
+        assertEquals(1, imported.size)
+        assertEquals(original.startedAt, imported.first().startedAt)
+        assertEquals(original.endedAt, imported.first().endedAt)
+        assertEquals(original.completedSets, imported.first().completedSets)
+        assertEquals(original.skippedCooldownSeconds, imported.first().skippedCooldownSeconds)
+        assertEquals(original.exercises, imported.first().exercises)
+    }
+
+    @Test
+    fun csvImportParsesQuotedExerciseNames() {
+        val csv = listOf(
+            "session_id,started_at,started_at_ms,ended_at,ended_at_ms,duration_seconds,session_completed_sets,session_planned_sets,actual_cooldown_seconds,skipped_cooldowns,skipped_cooldown_seconds,ended_early,exercise_name,exercise_completed_sets,exercise_planned_sets,reps,hold_seconds",
+            "1,2023-01-01 10:00:00,1000,2023-01-01 10:10:00,2000,60,1,1,0,0,0,false,\"Pullups, \"\"wide\"\"\",1,1,8,0"
+        ).joinToString("\n")
+
+        val imported = SpotBuddyCsv.decodeSessions(csv)
+
+        assertEquals("Pullups, \"wide\"", imported.first().exercises.first().name)
+        assertEquals(8, imported.first().exercises.first().reps)
+    }
 }
