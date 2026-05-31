@@ -316,7 +316,7 @@ private fun SpotBuddyApp() {
     }
 
     fun addCustomWorkout(name: String) {
-        val cleanName = name.trim().replace(Regex("\\s+"), " ")
+        val cleanName = normalizeWorkoutName(name)
         if (cleanName.isBlank()) return
         if (items.any { it.template.name.equals(cleanName, ignoreCase = true) }) return
         val template = customTemplate(cleanName, ExerciseMode.Reps.name, items.size)
@@ -468,8 +468,8 @@ private fun SpotBuddyApp() {
             SessionRecord(
                 id = 0L,
                 startedAt = startedAt,
-                endedAt = startedAt + manualDurationMinutes * 60_000L,
-                durationSeconds = manualDurationMinutes * 60,
+                endedAt = startedAt + manualDurationSeconds(manualDurationMinutes) * 1_000L,
+                durationSeconds = manualDurationSeconds(manualDurationMinutes),
                 completedSets = selected.sumOf { it.sets },
                 plannedSets = selected.sumOf { it.sets },
                 actualCooldownSeconds = cooldown,
@@ -564,10 +564,10 @@ private fun SpotBuddyApp() {
                     calendarMonthOffset = manualCalendarMonthOffset,
                     restSeconds = restSeconds,
                     onBack = { phase = SessionPhase.History },
-                    onDayOffsetChanged = { manualDayOffset = it.coerceIn(-365, 0) },
+                    onDayOffsetChanged = { manualDayOffset = clampManualDayOffset(it) },
                     onCalendarMonthChanged = { manualCalendarMonthOffset = it.coerceIn(-12, 0) },
                     onSkipCooldownChanged = { manualSkipCooldown = it },
-                    onDurationChanged = { manualDurationMinutes = it.coerceIn(0, 600) },
+                    onDurationChanged = { manualDurationMinutes = clampManualDurationMinutes(it) },
                     onSetsChanged = { template, delta ->
                         val index = manualItems.indexOfFirst { it.template == template }
                         if (index >= 0) {
@@ -2393,7 +2393,7 @@ private fun customTemplate(name: String, modeName: String, index: Int): Exercise
     val mode = runCatching { ExerciseMode.valueOf(modeName) }.getOrDefault(ExerciseMode.Reps)
     return ExerciseTemplate(
         name = name,
-        shortName = name.filter { it.isLetterOrDigit() }.take(4).uppercase().ifBlank { "MOVE" },
+        shortName = shortWorkoutName(name),
         mode = mode,
         defaultSets = 3,
         defaultReps = 0,
