@@ -64,6 +64,19 @@ android {
     }
 }
 
+val releaseVersionName = android.defaultConfig.versionName
+val releaseVersionCode = android.defaultConfig.versionCode
+
+val copyLabeledReleaseApk = tasks.register<Copy>("copyLabeledReleaseApk") {
+    from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
+    into(layout.buildDirectory.dir("outputs/apk/release-labeled"))
+    rename { "SpotBuddy-v${releaseVersionName}-${releaseVersionCode}-release.apk" }
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy(copyLabeledReleaseApk)
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
