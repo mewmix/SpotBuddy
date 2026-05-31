@@ -58,6 +58,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -134,6 +135,15 @@ private val WorkoutCatalog = listOf(
     ExerciseTemplate("Lunges", "MOVE", ExerciseMode.Reps, 3, 12, 0, Color(0xFF2E9DA7))
 )
 
+private val CustomAccents = listOf(
+    Color(0xFFE86F51),
+    Color(0xFF4E6FAE),
+    Color(0xFF8257A6),
+    Color(0xFF3E8D72),
+    Color(0xFFD59A21),
+    Color(0xFF2E9DA7)
+)
+
 private val MotivationMessages = listOf(
     "DONT GIVE UP",
     "YOU CAN DO IT",
@@ -158,6 +168,7 @@ private data class AnalyticsSummary(
     val lifetime: PeriodAnalytics,
     val weekly: PeriodAnalytics,
     val monthly: PeriodAnalytics,
+    val yearly: PeriodAnalytics,
     val exerciseTotals: List<ExerciseTotal>,
     val dayTotals: List<DayTotal>
 )
@@ -199,9 +210,11 @@ private fun SpotBuddyApp() {
     val items = remember {
         mutableStateListOf<WorkoutItem>().apply {
             val savedByName = savedState?.items.orEmpty().associateBy { it.name }
-            val orderedTemplates = buildList {
-                savedState?.items.orEmpty().forEach { saved ->
-                    WorkoutCatalog.firstOrNull { it.name == saved.name }?.let(::add)
+            val orderedTemplates = buildList<ExerciseTemplate> {
+                savedState?.items.orEmpty().forEachIndexed { index, saved ->
+                    val template = WorkoutCatalog.firstOrNull { it.name == saved.name }
+                        ?: customTemplate(saved.name, saved.mode, index)
+                    if (none { it.name == template.name }) add(template)
                 }
                 WorkoutCatalog.filterNot { template -> any { it.name == template.name } }.forEach(::add)
             }
@@ -243,6 +256,8 @@ private fun SpotBuddyApp() {
     var manualDayOffset by remember { mutableIntStateOf(0) }
     var manualSkipCooldown by remember { mutableStateOf(false) }
     var manualDurationMinutes by remember { mutableIntStateOf(0) }
+    var manualCalendarMonthOffset by remember { mutableIntStateOf(0) }
+    var customWorkoutName by remember { mutableStateOf("") }
 
     val activeItems = items.filter { it.selected && it.sets > 0 }
     val totalSets = activeItems.sumOf { it.sets }
@@ -255,6 +270,7 @@ private fun SpotBuddyApp() {
                 items = items.map {
                     SavedWorkoutItem(
                         name = it.template.name,
+                        mode = it.template.mode.name,
                         selected = it.selected,
                         sets = it.sets,
                         reps = it.reps,
@@ -297,6 +313,16 @@ private fun SpotBuddyApp() {
     fun updateItem(template: ExerciseTemplate, transform: (WorkoutItem) -> WorkoutItem) {
         val index = items.indexOfFirst { it.template == template }
         if (index >= 0) items[index] = transform(items[index])
+    }
+
+    fun addCustomWorkout(name: String) {
+        val cleanName = name.trim().replace(Regex("\\s+"), " ")
+        if (cleanName.isBlank()) return
+        if (items.any { it.template.name.equals(cleanName, ignoreCase = true) }) return
+        val template = customTemplate(cleanName, ExerciseMode.Reps.name, items.size)
+        items.add(WorkoutItem(template = template, selected = true, sets = 3, reps = 0, holdSeconds = 0))
+        manualItems.add(ManualExerciseCount(template))
+        customWorkoutName = ""
     }
 
     fun moveItem(fromIndex: Int, direction: Int) {
@@ -487,9 +513,12 @@ private fun SpotBuddyApp() {
                     items = items,
                     sessions = sessions,
                     restSeconds = restSeconds,
+                    customWorkoutName = customWorkoutName,
+                    onCustomWorkoutNameChanged = { customWorkoutName = it },
                     onRestChanged = { restSeconds = it.coerceIn(0, 180) },
                     onItemChanged = ::updateItem,
                     onMoveItem = ::moveItem,
+                    onAddCustomWorkout = ::addCustomWorkout,
                     onStart = ::startSession,
                     onHistory = { phase = SessionPhase.History }
                 )
@@ -532,9 +561,11 @@ private fun SpotBuddyApp() {
                     dayOffset = manualDayOffset,
                     skipCooldown = manualSkipCooldown,
                     durationMinutes = manualDurationMinutes,
+                    calendarMonthOffset = manualCalendarMonthOffset,
                     restSeconds = restSeconds,
                     onBack = { phase = SessionPhase.History },
                     onDayOffsetChanged = { manualDayOffset = it.coerceIn(-365, 0) },
+                    onCalendarMonthChanged = { manualCalendarMonthOffset = it.coerceIn(-12, 0) },
                     onSkipCooldownChanged = { manualSkipCooldown = it },
                     onDurationChanged = { manualDurationMinutes = it.coerceIn(0, 600) },
                     onSetsChanged = { template, delta ->
@@ -569,9 +600,12 @@ private fun SetupScreen(
     items: List<WorkoutItem>,
     sessions: List<SessionRecord>,
     restSeconds: Int,
+    customWorkoutName: String,
+    onCustomWorkoutNameChanged: (String) -> Unit,
     onRestChanged: (Int) -> Unit,
     onItemChanged: (ExerciseTemplate, (WorkoutItem) -> WorkoutItem) -> Unit,
     onMoveItem: (Int, Int) -> Unit,
+    onAddCustomWorkout: (String) -> Unit,
     onStart: () -> Unit,
     onHistory: () -> Unit
 ) {
@@ -612,6 +646,39 @@ private fun SetupScreen(
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.onBackground
         )
+
+        Spacer(Modifier.height(12.dp))
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Custom workout", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = customWorkoutName,
+                        onValueChange = onCustomWorkoutNameChanged,
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("Name") },
+                        shape = RoundedCornerShape(14.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Button(
+                        onClick = { onAddCustomWorkout(customWorkoutName) },
+                        enabled = customWorkoutName.isNotBlank(),
+                        modifier = Modifier.height(56.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null)
+                    }
+                }
+            }
+        }
 
         Spacer(Modifier.height(12.dp))
 
@@ -714,7 +781,7 @@ private fun WorkoutSetupCard(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        if (item.template.mode == ExerciseMode.Timer) "${item.holdSeconds}s hold" else "${item.reps} reps per set",
+                        if (item.template.mode == ExerciseMode.Timer) "${item.holdSeconds}s hold" else "Set counter",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -765,13 +832,15 @@ private fun WorkoutSetupCard(
                         onMinus = { onSets(-1) },
                         onPlus = { onSets(1) }
                     )
-                    Spacer(Modifier.height(10.dp))
-                    ControlStrip(
-                        label = if (item.template.mode == ExerciseMode.Timer) "Hold" else "Reps",
-                        value = if (item.template.mode == ExerciseMode.Timer) "${item.holdSeconds}s" else item.reps.toString(),
-                        onMinus = { onAmount(-1) },
-                        onPlus = { onAmount(1) }
-                    )
+                    if (item.template.mode == ExerciseMode.Timer) {
+                        Spacer(Modifier.height(10.dp))
+                        ControlStrip(
+                            label = "Hold",
+                            value = "${item.holdSeconds}s",
+                            onMinus = { onAmount(-1) },
+                            onPlus = { onAmount(1) }
+                        )
+                    }
                 }
             }
         }
@@ -875,14 +944,14 @@ private fun ActiveScreen(
                     }
                 } else {
                     Text(
-                        item.reps.toString(),
+                        "SET",
                         style = MaterialTheme.typography.displayLarge,
                         color = item.template.accent,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text(
-                        "reps",
+                        "count reps your way",
                         style = MaterialTheme.typography.titleLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -1008,9 +1077,11 @@ private fun ManualEntryScreen(
     dayOffset: Int,
     skipCooldown: Boolean,
     durationMinutes: Int,
+    calendarMonthOffset: Int,
     restSeconds: Int,
     onBack: () -> Unit,
     onDayOffsetChanged: (Int) -> Unit,
+    onCalendarMonthChanged: (Int) -> Unit,
     onSkipCooldownChanged: (Boolean) -> Unit,
     onDurationChanged: (Int) -> Unit,
     onSetsChanged: (ExerciseTemplate, Int) -> Unit,
@@ -1042,6 +1113,15 @@ private fun ManualEntryScreen(
             leftLabel = "sets to add",
             rightValue = if (skipCooldown) "${restSeconds}s" else "0s",
             rightLabel = "cooldown skipped"
+        )
+
+        Spacer(Modifier.height(14.dp))
+
+        CalendarDatePicker(
+            selectedDayOffset = dayOffset,
+            monthOffset = calendarMonthOffset,
+            onMonthOffsetChanged = onCalendarMonthChanged,
+            onDayOffsetChanged = onDayOffsetChanged
         )
 
         Spacer(Modifier.height(14.dp))
@@ -1153,6 +1233,129 @@ private fun ManualEntryScreen(
 }
 
 @Composable
+private fun CalendarDatePicker(
+    selectedDayOffset: Int,
+    monthOffset: Int,
+    onMonthOffsetChanged: (Int) -> Unit,
+    onDayOffsetChanged: (Int) -> Unit
+) {
+    val todayStart = startOfDay(System.currentTimeMillis())
+    val selectedStart = dayStartForOffset(selectedDayOffset)
+    val month = Calendar.getInstance().apply {
+        timeInMillis = todayStart
+        add(Calendar.MONTH, monthOffset)
+        set(Calendar.DAY_OF_MONTH, 1)
+    }
+    val monthTitle = SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(month.time)
+    val daysInMonth = month.getActualMaximum(Calendar.DAY_OF_MONTH)
+    val firstDayOffset = (month.get(Calendar.DAY_OF_WEEK) - Calendar.SUNDAY).coerceAtLeast(0)
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = { onMonthOffsetChanged(monthOffset - 1) },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Previous")
+                }
+                Text(
+                    monthTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1.4f)
+                )
+                OutlinedButton(
+                    onClick = { onMonthOffsetChanged(monthOffset + 1) },
+                    enabled = monthOffset < 0,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Next")
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            listOf("S", "M", "T", "W", "T", "F", "S").chunked(7).forEach { labels ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    labels.forEach { label ->
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            val cells = buildList<Int?> {
+                repeat(firstDayOffset) { add(null) }
+                (1..daysInMonth).forEach(::add)
+                while (size % 7 != 0) add(null)
+            }
+            cells.chunked(7).forEach { week ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    week.forEach { day ->
+                        val dayStart = day?.let {
+                            Calendar.getInstance().apply {
+                                timeInMillis = month.timeInMillis
+                                set(Calendar.DAY_OF_MONTH, it)
+                            }.timeInMillis
+                        }
+                        val isFuture = dayStart != null && dayStart > todayStart
+                        val isSelected = dayStart == selectedStart
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(42.dp)
+                                .then(
+                                    if (dayStart != null && !isFuture) {
+                                        Modifier.clickable { onDayOffsetChanged(dayOffsetFor(dayStart)) }
+                                    } else {
+                                        Modifier
+                                    }
+                                ),
+                            shape = RoundedCornerShape(12.dp),
+                            color = when {
+                                isSelected -> MaterialTheme.colorScheme.primary
+                                dayStart == null -> Color.Transparent
+                                isFuture -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                            }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    day?.toString().orEmpty(),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun HistoryScreen(
     sessions: List<SessionRecord>,
     onBack: () -> Unit,
@@ -1213,18 +1416,69 @@ private fun HistoryScreen(
         }
 
         val summary = remember(sessions) { buildAnalyticsSummary(sessions) }
+        var analyticsExpanded by remember { mutableStateOf(true) }
+        var chartsExpanded by remember { mutableStateOf(true) }
+        var sessionsExpanded by remember { mutableStateOf(true) }
 
-        AnalyticsPanel(summary)
-        Spacer(Modifier.height(16.dp))
+        CollapsibleHistorySection(
+            title = "Analytics",
+            expanded = analyticsExpanded,
+            onToggle = { analyticsExpanded = !analyticsExpanded }
+        ) {
+            AnalyticsPanel(summary)
+        }
 
-        ChartsSection(sessions = sessions, summary = summary)
-        Spacer(Modifier.height(16.dp))
+        CollapsibleHistorySection(
+            title = "Charts",
+            expanded = chartsExpanded,
+            onToggle = { chartsExpanded = !chartsExpanded }
+        ) {
+            ChartsSection(sessions = sessions, summary = summary)
+        }
 
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            sessions.forEach { session ->
-                SessionCard(session = session, onDelete = { onDelete(session.id) })
+        CollapsibleHistorySection(
+            title = "Sessions",
+            expanded = sessionsExpanded,
+            onToggle = { sessionsExpanded = !sessionsExpanded }
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                sessions.forEach { session ->
+                    SessionCard(session = session, onDelete = { onDelete(session.id) })
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun CollapsibleHistorySection(
+    title: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Spacer(Modifier.height(12.dp))
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
+            Text(if (expanded) "Hide" else "Show", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+    AnimatedVisibility(expanded) {
+        Column(
+            modifier = Modifier.padding(top = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = content
+        )
     }
 }
 
@@ -1253,6 +1507,7 @@ private fun AnalyticsPanel(summary: AnalyticsSummary) {
         PeriodAnalyticsCard(summary.lifetime)
         PeriodAnalyticsCard(summary.weekly)
         PeriodAnalyticsCard(summary.monthly)
+        PeriodAnalyticsCard(summary.yearly)
 
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -2016,10 +2271,12 @@ private fun buildAnalyticsSummary(sessions: List<SessionRecord>): AnalyticsSumma
     val todayStart = startOfDay(now)
     val weekStart = startOfWeek(now)
     val monthStart = startOfMonth(now)
+    val yearStart = startOfYear(now)
     val byExercise = linkedMapOf<String, Pair<Int, Int>>()
     val sessionsByDay = sessions.groupBy { startOfDay(it.startedAt) }
     val weeklySessions = sessions.filter { it.startedAt >= weekStart }
     val monthlySessions = sessions.filter { it.startedAt >= monthStart }
+    val yearlySessions = sessions.filter { it.startedAt >= yearStart }
 
     sessions.flatMap { it.exercises }.forEach { exercise ->
         val current = byExercise[exercise.name] ?: (0 to 0)
@@ -2058,6 +2315,7 @@ private fun buildAnalyticsSummary(sessions: List<SessionRecord>): AnalyticsSumma
         lifetime = buildPeriodAnalytics("Lifetime", sessions),
         weekly = buildPeriodAnalytics("This week", weeklySessions),
         monthly = buildPeriodAnalytics("This month", monthlySessions),
+        yearly = buildPeriodAnalytics("This year", yearlySessions),
         exerciseTotals = byExercise.map { (name, counts) ->
             ExerciseTotal(name = name, sets = counts.first, plannedSets = counts.second)
         }.sortedByDescending { it.sets },
@@ -2110,6 +2368,38 @@ private fun startOfMonth(timestamp: Long): Long {
         timeInMillis = startOfDay(timestamp)
         set(Calendar.DAY_OF_MONTH, 1)
     }.timeInMillis
+}
+
+private fun startOfYear(timestamp: Long): Long {
+    return Calendar.getInstance().apply {
+        timeInMillis = startOfDay(timestamp)
+        set(Calendar.DAY_OF_YEAR, 1)
+    }.timeInMillis
+}
+
+private fun dayStartForOffset(dayOffset: Int): Long {
+    return Calendar.getInstance().apply {
+        timeInMillis = startOfDay(System.currentTimeMillis())
+        add(Calendar.DAY_OF_YEAR, dayOffset)
+    }.timeInMillis
+}
+
+private fun dayOffsetFor(dayStart: Long): Int {
+    val today = startOfDay(System.currentTimeMillis())
+    return ((dayStart - today) / 86_400_000L).toInt()
+}
+
+private fun customTemplate(name: String, modeName: String, index: Int): ExerciseTemplate {
+    val mode = runCatching { ExerciseMode.valueOf(modeName) }.getOrDefault(ExerciseMode.Reps)
+    return ExerciseTemplate(
+        name = name,
+        shortName = name.filter { it.isLetterOrDigit() }.take(4).uppercase().ifBlank { "MOVE" },
+        mode = mode,
+        defaultSets = 3,
+        defaultReps = 0,
+        defaultHoldSeconds = if (mode == ExerciseMode.Timer) 45 else 0,
+        accent = CustomAccents[index % CustomAccents.size]
+    )
 }
 
 private fun manualDateLabel(dayOffset: Int): String {

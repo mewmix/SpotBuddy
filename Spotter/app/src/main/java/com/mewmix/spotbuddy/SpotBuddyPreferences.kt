@@ -6,6 +6,7 @@ import org.json.JSONObject
 
 data class SavedWorkoutItem(
     val name: String,
+    val mode: String,
     val selected: Boolean,
     val sets: Int,
     val reps: Int,
@@ -49,6 +50,7 @@ class SpotBuddyPreferences(context: Context) {
                     put(
                         JSONObject()
                             .put("name", item.name)
+                            .put("mode", item.mode)
                             .put("selected", item.selected)
                             .put("sets", item.sets)
                             .put("reps", item.reps)
@@ -71,6 +73,7 @@ class SpotBuddyPreferences(context: Context) {
                     val item = items.getJSONObject(index)
                     SavedWorkoutItem(
                         name = item.getString("name"),
+                        mode = item.optString("mode", "Reps"),
                         selected = item.getBoolean("selected"),
                         sets = item.getInt("sets"),
                         reps = item.getInt("reps"),
