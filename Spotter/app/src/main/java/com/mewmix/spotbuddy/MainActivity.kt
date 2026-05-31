@@ -1,6 +1,9 @@
 package com.mewmix.spotbuddy
 
 import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
@@ -49,6 +52,8 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -259,38 +264,137 @@ private fun SpotBuddyApp() {
     var manualCalendarMonthOffset by remember { mutableIntStateOf(0) }
     var customWorkoutName by remember { mutableStateOf("") }
 
+    fun currentSavedAppState(targetPhase: SessionPhase = phase): SavedAppState {
+        return SavedAppState(
+            items = items.map {
+                SavedWorkoutItem(
+                    name = it.template.name,
+                    mode = it.template.mode.name,
+                    selected = it.selected,
+                    sets = it.sets,
+                    reps = it.reps,
+                    holdSeconds = it.holdSeconds,
+                    completed = it.completed
+                )
+            },
+            phase = targetPhase.name,
+            currentIndex = currentIndex,
+            restSeconds = restSeconds,
+            remainingSeconds = remainingSeconds,
+            activeTimerSeconds = activeTimerSeconds,
+            sessionStartedAt = sessionStartedAt,
+            actualCooldownSeconds = actualCooldownSeconds,
+            skippedCooldowns = skippedCooldowns,
+            skippedCooldownSeconds = skippedCooldownSeconds,
+            sessionEndedEarly = sessionEndedEarly,
+            savedSessionId = savedSessionId
+        )
+    }
+
+    fun sanitizeImportedState(state: SavedAppState): SavedAppState {
+        return state.copy(
+            items = state.items.map { it.copy(completed = 0) },
+            phase = SessionPhase.Setup.name,
+            currentIndex = 0,
+            remainingSeconds = state.restSeconds,
+            activeTimerSeconds = 0,
+            sessionStartedAt = 0L,
+            actualCooldownSeconds = 0,
+            skippedCooldowns = 0,
+            skippedCooldownSeconds = 0,
+            sessionEndedEarly = false,
+            savedSessionId = 0L
+        )
+    }
+
+    fun applySavedAppState(state: SavedAppState) {
+        val savedByName = state.items.associateBy { it.name }
+        val orderedTemplates = buildList<ExerciseTemplate> {
+            state.items.forEachIndexed { index, saved ->
+                val template = WorkoutCatalog.firstOrNull { it.name == saved.name }
+                    ?: customTemplate(saved.name, saved.mode, index)
+                if (none { it.name == template.name }) add(template)
+            }
+            WorkoutCatalog.filterNot { template -> any { it.name == template.name } }.forEach(::add)
+        }
+        items.clear()
+        items.addAll(
+            orderedTemplates.map { template ->
+                val saved = savedByName[template.name]
+                WorkoutItem(
+                    template = template,
+                    selected = saved?.selected ?: true,
+                    sets = saved?.sets ?: template.defaultSets,
+                    reps = saved?.reps ?: template.defaultReps,
+                    holdSeconds = saved?.holdSeconds ?: template.defaultHoldSeconds,
+                    completed = saved?.completed ?: 0
+                )
+            }
+        )
+        manualItems.clear()
+        manualItems.addAll(items.map { ManualExerciseCount(it.template) })
+        currentIndex = state.currentIndex
+        restSeconds = state.restSeconds
+        remainingSeconds = state.remainingSeconds
+        activeTimerSeconds = state.activeTimerSeconds
+        sessionStartedAt = state.sessionStartedAt
+        actualCooldownSeconds = state.actualCooldownSeconds
+        skippedCooldowns = state.skippedCooldowns
+        skippedCooldownSeconds = state.skippedCooldownSeconds
+        sessionEndedEarly = state.sessionEndedEarly
+        savedSessionId = state.savedSessionId
+        phase = SessionPhase.entries.firstOrNull { it.name == state.phase }
+            ?.takeIf { it != SessionPhase.ManualEntry } ?: SessionPhase.Setup
+    }
+
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val backup = SpotBuddyBackup.encode(
+            sessions = database.getSessions(),
+            savedState = currentSavedAppState(SessionPhase.Setup)
+        )
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { stream ->
+                stream.write(backup.toByteArray(Charsets.UTF_8))
+            } ?: error("Unable to open backup file")
+        }.onSuccess {
+            Toast.makeText(context, "SpotBuddy backup exported", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(context, "Backup export failed", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            val raw = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                ?: error("Unable to open backup file")
+            SpotBuddyBackup.decode(raw)
+        }.onSuccess { backup ->
+            val importedCount = database.importSessions(backup.sessions)
+            backup.savedState?.let { importedState ->
+                val sanitized = sanitizeImportedState(importedState)
+                preferences.save(sanitized)
+                applySavedAppState(sanitized)
+            }
+            sessions = database.getSessions()
+            Toast.makeText(context, "Imported $importedCount new sessions", Toast.LENGTH_LONG).show()
+        }.onFailure {
+            Toast.makeText(context, "Backup import failed", Toast.LENGTH_LONG).show()
+        }
+    }
+
     val activeItems = items.filter { it.selected && it.sets > 0 }
     val totalSets = activeItems.sumOf { it.sets }
     val completedSets = activeItems.sumOf { it.completed }
     val currentItem = activeItems.getOrNull(currentIndex.coerceIn(0, max(activeItems.lastIndex, 0)))
 
     fun persistAppState(targetPhase: SessionPhase = phase) {
-        preferences.save(
-            SavedAppState(
-                items = items.map {
-                    SavedWorkoutItem(
-                        name = it.template.name,
-                        mode = it.template.mode.name,
-                        selected = it.selected,
-                        sets = it.sets,
-                        reps = it.reps,
-                        holdSeconds = it.holdSeconds,
-                        completed = it.completed
-                    )
-                },
-                phase = targetPhase.name,
-                currentIndex = currentIndex,
-                restSeconds = restSeconds,
-                remainingSeconds = remainingSeconds,
-                activeTimerSeconds = activeTimerSeconds,
-                sessionStartedAt = sessionStartedAt,
-                actualCooldownSeconds = actualCooldownSeconds,
-                skippedCooldowns = skippedCooldowns,
-                skippedCooldownSeconds = skippedCooldownSeconds,
-                sessionEndedEarly = sessionEndedEarly,
-                savedSessionId = savedSessionId
-            )
-        )
+        preferences.save(currentSavedAppState(targetPhase))
     }
 
     LaunchedEffect(
@@ -550,6 +654,13 @@ private fun SpotBuddyApp() {
                     sessions = sessions,
                     onBack = { phase = SessionPhase.Setup },
                     onAddHistorical = { phase = SessionPhase.ManualEntry },
+                    onExportBackup = {
+                        val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+                        exportBackupLauncher.launch("spotbuddy-backup-$stamp.json")
+                    },
+                    onImportBackup = {
+                        importBackupLauncher.launch(arrayOf("application/json", "text/*"))
+                    },
                     onDelete = { id ->
                         database.deleteSession(id)
                         sessions = database.getSessions()
@@ -1360,6 +1471,8 @@ private fun HistoryScreen(
     sessions: List<SessionRecord>,
     onBack: () -> Unit,
     onAddHistorical: () -> Unit,
+    onExportBackup: () -> Unit,
+    onImportBackup: () -> Unit,
     onDelete: (Long) -> Unit
 ) {
     AppScaffold {
@@ -1390,6 +1503,36 @@ private fun HistoryScreen(
             Icon(Icons.Default.Edit, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text("Add Historical Counts", style = MaterialTheme.typography.labelLarge)
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            OutlinedButton(
+                onClick = onExportBackup,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(52.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.FileUpload, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Export", style = MaterialTheme.typography.labelLarge)
+            }
+            OutlinedButton(
+                onClick = onImportBackup,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(52.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.FileDownload, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Import", style = MaterialTheme.typography.labelLarge)
+            }
         }
 
         Spacer(Modifier.height(16.dp))

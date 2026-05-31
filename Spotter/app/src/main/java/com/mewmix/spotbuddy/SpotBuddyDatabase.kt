@@ -69,19 +69,25 @@ class SpotBuddyDatabase(context: Context) :
     }
 
     fun insertSession(record: SessionRecord): Long {
-        val values = ContentValues().apply {
-            put("started_at", record.startedAt)
-            put("ended_at", record.endedAt)
-            put("duration_seconds", record.durationSeconds)
-            put("completed_sets", record.completedSets)
-            put("planned_sets", record.plannedSets)
-            put("actual_cooldown_seconds", record.actualCooldownSeconds)
-            put("skipped_cooldowns", record.skippedCooldowns)
-            put("skipped_cooldown_seconds", record.skippedCooldownSeconds)
-            put("ended_early", if (record.endedEarly) 1 else 0)
-            put("exercises_json", encodeExercises(record.exercises))
+        return writableDatabase.insert("sessions", null, sessionValues(record))
+    }
+
+    fun importSessions(records: List<SessionRecord>): Int {
+        var inserted = 0
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            records.forEach { record ->
+                if (!sessionExists(db, record)) {
+                    db.insert("sessions", null, sessionValues(record))
+                    inserted += 1
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
-        return writableDatabase.insert("sessions", null, values)
+        return inserted
     }
 
     fun getSessions(): List<SessionRecord> {
@@ -116,6 +122,43 @@ class SpotBuddyDatabase(context: Context) :
 
     fun deleteSession(id: Long) {
         writableDatabase.delete("sessions", "id = ?", arrayOf(id.toString()))
+    }
+
+    private fun sessionValues(record: SessionRecord): ContentValues {
+        return ContentValues().apply {
+            put("started_at", record.startedAt)
+            put("ended_at", record.endedAt)
+            put("duration_seconds", record.durationSeconds)
+            put("completed_sets", record.completedSets)
+            put("planned_sets", record.plannedSets)
+            put("actual_cooldown_seconds", record.actualCooldownSeconds)
+            put("skipped_cooldowns", record.skippedCooldowns)
+            put("skipped_cooldown_seconds", record.skippedCooldownSeconds)
+            put("ended_early", if (record.endedEarly) 1 else 0)
+            put("exercises_json", encodeExercises(record.exercises))
+        }
+    }
+
+    private fun sessionExists(db: SQLiteDatabase, record: SessionRecord): Boolean {
+        val encodedExercises = encodeExercises(record.exercises)
+        db.query(
+            "sessions",
+            arrayOf("id"),
+            "started_at = ? AND ended_at = ? AND completed_sets = ? AND planned_sets = ? AND exercises_json = ?",
+            arrayOf(
+                record.startedAt.toString(),
+                record.endedAt.toString(),
+                record.completedSets.toString(),
+                record.plannedSets.toString(),
+                encodedExercises
+            ),
+            null,
+            null,
+            null,
+            "1"
+        ).use { cursor ->
+            return cursor.moveToFirst()
+        }
     }
 
     private fun encodeExercises(exercises: List<ExerciseSummary>): String {

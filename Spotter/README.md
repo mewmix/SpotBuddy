@@ -19,6 +19,19 @@ adb devices
 
 The normal Gradle install path updates the app without clearing local app data. Do not uninstall or clear data before installing if you want to preserve the local SQLite history database and saved workout preferences.
 
+## Debug to Release Migration
+
+Android will not update a debug APK with a differently signed release APK. To keep workout history:
+
+1. Install the latest debug build.
+2. Open SpotBuddy, go to History, and tap Export.
+3. Save the `spotbuddy-backup-*.json` file somewhere easy to find.
+4. Uninstall the debug APK.
+5. Install the GitHub release APK.
+6. Open SpotBuddy, go to History, tap Import, and select the backup file.
+
+Imports merge new sessions and skip matching sessions that are already present. Imported workout preferences are restored to the setup screen, not to an active or completed workout.
+
 ## Release Signing
 
 Release builds use the same signing pattern as Nabu:
