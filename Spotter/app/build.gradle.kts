@@ -15,8 +15,8 @@ android {
         applicationId = "com.mewmix.spotbuddy"
         minSdk = 29
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.2.2"
     }
 
     signingConfigs {
@@ -66,11 +66,15 @@ android {
 
 val releaseVersionName = android.defaultConfig.versionName
 val releaseVersionCode = android.defaultConfig.versionCode
+val labeledReleaseDir = layout.buildDirectory.dir("outputs/apk/release-labeled")
 
 val copyLabeledReleaseApk = tasks.register<Copy>("copyLabeledReleaseApk") {
     from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
-    into(layout.buildDirectory.dir("outputs/apk/release-labeled"))
+    into(labeledReleaseDir)
     rename { "SpotBuddy-v${releaseVersionName}-${releaseVersionCode}-release.apk" }
+    doFirst {
+        delete(labeledReleaseDir.get().asFile)
+    }
 }
 
 tasks.matching { it.name == "assembleRelease" }.configureEach {

@@ -32,6 +32,13 @@ Android will not update a debug APK with a differently signed release APK. To ke
 
 Imports merge new sessions and skip matching sessions that are already present. Imported workout preferences are restored to the setup screen, not to an active or completed workout.
 
+## History Export
+
+History includes two export paths:
+
+- Export creates a SpotBuddy JSON backup for app-to-app migration.
+- Export CSV creates a spreadsheet-friendly workout history file with one row per exercise per session.
+
 ## Release Signing
 
 Release builds use the same signing pattern as Nabu:
@@ -62,7 +69,7 @@ GitHub Actions release secrets:
 - `RELEASE_KEY_ALIAS`
 - `RELEASE_KEY_PASSWORD`
 
-The manual release workflow decodes `RELEASE_KEYSTORE_BASE64`, assembles `app:assembleRelease`, and uploads the release APK artifact.
+The manual release workflow runs `./gradlew build`, runs `./gradlew test`, decodes `RELEASE_KEYSTORE_BASE64`, assembles `app:assembleRelease`, verifies that the labeled APK exists, uploads the APK artifact, and publishes a GitHub Release for the requested tag.
 
 ## CI Flow
 

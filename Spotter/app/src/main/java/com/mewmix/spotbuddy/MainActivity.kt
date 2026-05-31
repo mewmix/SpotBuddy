@@ -366,6 +366,22 @@ private fun SpotBuddyApp() {
         }
     }
 
+    val exportCsvLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val csv = SpotBuddyCsv.encodeSessions(database.getSessions())
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { stream ->
+                stream.write(csv.toByteArray(Charsets.UTF_8))
+            } ?: error("Unable to open CSV file")
+        }.onSuccess {
+            Toast.makeText(context, "SpotBuddy CSV exported", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(context, "CSV export failed", Toast.LENGTH_LONG).show()
+        }
+    }
+
     val importBackupLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -657,6 +673,10 @@ private fun SpotBuddyApp() {
                     onExportBackup = {
                         val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
                         exportBackupLauncher.launch("spotbuddy-backup-$stamp.json")
+                    },
+                    onExportCsv = {
+                        val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+                        exportCsvLauncher.launch("spotbuddy-history-$stamp.csv")
                     },
                     onImportBackup = {
                         importBackupLauncher.launch(arrayOf("application/json", "text/*"))
@@ -1472,6 +1492,7 @@ private fun HistoryScreen(
     onBack: () -> Unit,
     onAddHistorical: () -> Unit,
     onExportBackup: () -> Unit,
+    onExportCsv: () -> Unit,
     onImportBackup: () -> Unit,
     onDelete: (Long) -> Unit
 ) {
@@ -1533,6 +1554,20 @@ private fun HistoryScreen(
                 Spacer(Modifier.width(8.dp))
                 Text("Import", style = MaterialTheme.typography.labelLarge)
             }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        OutlinedButton(
+            onClick = onExportCsv,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Icon(Icons.Default.BarChart, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Export CSV", style = MaterialTheme.typography.labelLarge)
         }
 
         Spacer(Modifier.height(16.dp))
