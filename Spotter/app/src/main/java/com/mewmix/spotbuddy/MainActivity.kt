@@ -149,6 +149,7 @@ private data class AnalyticsSummary(
     val totalCooldownSeconds: Int,
     val totalSkippedCooldownSeconds: Int,
     val endedEarlyCount: Int,
+    val manualSessionCount: Int,
     val todaySets: Int,
     val weekSets: Int,
     val monthSets: Int,
@@ -227,12 +228,13 @@ private fun SpotBuddyApp() {
     var currentIndex by remember { mutableIntStateOf(savedState?.currentIndex ?: 0) }
     var restSeconds by remember { mutableIntStateOf(savedState?.restSeconds ?: 45) }
     var remainingSeconds by remember { mutableIntStateOf(savedState?.remainingSeconds ?: 45) }
+    var activeTimerSeconds by remember { mutableIntStateOf(savedState?.activeTimerSeconds ?: 0) }
     var sessionStartedAt by remember { mutableLongStateOf(savedState?.sessionStartedAt ?: 0L) }
     var actualCooldownSeconds by remember { mutableIntStateOf(savedState?.actualCooldownSeconds ?: 0) }
     var skippedCooldowns by remember { mutableIntStateOf(savedState?.skippedCooldowns ?: 0) }
     var skippedCooldownSeconds by remember { mutableIntStateOf(savedState?.skippedCooldownSeconds ?: 0) }
     var sessionEndedEarly by remember { mutableStateOf(savedState?.sessionEndedEarly ?: false) }
-    var savedSessionId by remember { mutableLongStateOf(0L) }
+    var savedSessionId by remember { mutableLongStateOf(savedState?.savedSessionId ?: 0L) }
     val manualItems = remember {
         mutableStateListOf<ManualExerciseCount>().apply {
             addAll(WorkoutCatalog.map { ManualExerciseCount(it) })
@@ -240,6 +242,7 @@ private fun SpotBuddyApp() {
     }
     var manualDayOffset by remember { mutableIntStateOf(0) }
     var manualSkipCooldown by remember { mutableStateOf(false) }
+    var manualDurationMinutes by remember { mutableIntStateOf(0) }
 
     val activeItems = items.filter { it.selected && it.sets > 0 }
     val totalSets = activeItems.sumOf { it.sets }
@@ -263,11 +266,13 @@ private fun SpotBuddyApp() {
                 currentIndex = currentIndex,
                 restSeconds = restSeconds,
                 remainingSeconds = remainingSeconds,
+                activeTimerSeconds = activeTimerSeconds,
                 sessionStartedAt = sessionStartedAt,
                 actualCooldownSeconds = actualCooldownSeconds,
                 skippedCooldowns = skippedCooldowns,
                 skippedCooldownSeconds = skippedCooldownSeconds,
-                sessionEndedEarly = sessionEndedEarly
+                sessionEndedEarly = sessionEndedEarly,
+                savedSessionId = savedSessionId
             )
         )
     }
@@ -278,11 +283,13 @@ private fun SpotBuddyApp() {
         currentIndex,
         restSeconds,
         remainingSeconds,
+        activeTimerSeconds,
         sessionStartedAt,
         actualCooldownSeconds,
         skippedCooldowns,
         skippedCooldownSeconds,
-        sessionEndedEarly
+        sessionEndedEarly,
+        savedSessionId
     ) {
         persistAppState()
     }
@@ -318,6 +325,9 @@ private fun SpotBuddyApp() {
         sessionEndedEarly = false
         savedSessionId = 0L
         sessionStartedAt = System.currentTimeMillis()
+        activeTimerSeconds = activeItems.firstOrNull()
+            ?.takeIf { it.template.mode == ExerciseMode.Timer }
+            ?.holdSeconds ?: 0
         phase = SessionPhase.Active
     }
 
@@ -348,6 +358,8 @@ private fun SpotBuddyApp() {
         savedSessionId = database.insertSession(record)
         sessions = database.getSessions()
         sessionStartedAt = 0L
+        activeTimerSeconds = 0
+        persistAppState(SessionPhase.Complete)
     }
 
     fun finishEarly(fromCooldown: Boolean) {
@@ -358,6 +370,7 @@ private fun SpotBuddyApp() {
             skippedCooldownSeconds += remainingSeconds
         }
         sessionEndedEarly = true
+        activeTimerSeconds = 0
         phase = SessionPhase.Complete
     }
 
@@ -378,16 +391,25 @@ private fun SpotBuddyApp() {
         currentIndex = next ?: 0
         if (startRest && restSeconds > 0) {
             remainingSeconds = restSeconds
+            activeTimerSeconds = 0
             phase = SessionPhase.Rest
         } else {
             skippedCooldowns += 1
             skippedCooldownSeconds += restSeconds
+            val nextItem = activeItems.getOrNull(next ?: 0)
+            activeTimerSeconds = nextItem
+                ?.takeIf { it.template.mode == ExerciseMode.Timer }
+                ?.holdSeconds ?: 0
             phase = SessionPhase.Active
         }
     }
 
     fun finishCooldown() {
         actualCooldownSeconds += restSeconds
+        val nextItem = activeItems.getOrNull(currentIndex)
+        activeTimerSeconds = nextItem
+            ?.takeIf { it.template.mode == ExerciseMode.Timer }
+            ?.holdSeconds ?: 0
         phase = SessionPhase.Active
     }
 
@@ -396,6 +418,10 @@ private fun SpotBuddyApp() {
         actualCooldownSeconds += taken
         skippedCooldowns += 1
         skippedCooldownSeconds += remainingSeconds
+        val nextItem = activeItems.getOrNull(currentIndex)
+        activeTimerSeconds = nextItem
+            ?.takeIf { it.template.mode == ExerciseMode.Timer }
+            ?.holdSeconds ?: 0
         phase = SessionPhase.Active
     }
 
@@ -416,8 +442,8 @@ private fun SpotBuddyApp() {
             SessionRecord(
                 id = 0L,
                 startedAt = startedAt,
-                endedAt = startedAt,
-                durationSeconds = 0,
+                endedAt = startedAt + manualDurationMinutes * 60_000L,
+                durationSeconds = manualDurationMinutes * 60,
                 completedSets = selected.sumOf { it.sets },
                 plannedSets = selected.sumOf { it.sets },
                 actualCooldownSeconds = cooldown,
@@ -439,6 +465,7 @@ private fun SpotBuddyApp() {
         manualItems.indices.forEach { index -> manualItems[index] = manualItems[index].copy(sets = 0) }
         manualDayOffset = 0
         manualSkipCooldown = false
+        manualDurationMinutes = 0
         phase = SessionPhase.History
     }
 
@@ -471,6 +498,8 @@ private fun SpotBuddyApp() {
                     item = currentItem,
                     completedSets = completedSets,
                     totalSets = totalSets,
+                    timerSeconds = activeTimerSeconds,
+                    onTimerSecondsChanged = { activeTimerSeconds = it },
                     onCompleteSet = { completeCurrentSet(startRest = true) },
                     onSkipRest = { completeCurrentSet(startRest = false) },
                     onEnd = { finishEarly(fromCooldown = false) }
@@ -502,10 +531,12 @@ private fun SpotBuddyApp() {
                     items = manualItems,
                     dayOffset = manualDayOffset,
                     skipCooldown = manualSkipCooldown,
+                    durationMinutes = manualDurationMinutes,
                     restSeconds = restSeconds,
                     onBack = { phase = SessionPhase.History },
                     onDayOffsetChanged = { manualDayOffset = it.coerceIn(-365, 0) },
                     onSkipCooldownChanged = { manualSkipCooldown = it },
+                    onDurationChanged = { manualDurationMinutes = it.coerceIn(0, 600) },
                     onSetsChanged = { template, delta ->
                         val index = manualItems.indexOfFirst { it.template == template }
                         if (index >= 0) {
@@ -752,6 +783,8 @@ private fun ActiveScreen(
     item: WorkoutItem?,
     completedSets: Int,
     totalSets: Int,
+    timerSeconds: Int,
+    onTimerSecondsChanged: (Int) -> Unit,
     onCompleteSet: () -> Unit,
     onSkipRest: () -> Unit,
     onEnd: () -> Unit
@@ -761,9 +794,6 @@ private fun ActiveScreen(
         return
     }
 
-    var timerSeconds by remember(item.template.name, item.completed) {
-        mutableIntStateOf(item.holdSeconds)
-    }
     var motivationIndex by remember(item.template.name, item.completed) {
         mutableIntStateOf(0)
     }
@@ -772,12 +802,19 @@ private fun ActiveScreen(
     }
 
     if (item.template.mode == ExerciseMode.Timer && !LocalInspectionMode.current) {
+        LaunchedEffect(item.template.name, item.completed) {
+            if (timerSeconds <= 0) onTimerSecondsChanged(item.holdSeconds)
+        }
         LaunchedEffect(item.template.name, item.completed, timerSeconds) {
-            if (timerSeconds > 0) {
-                delay(1000)
-                timerSeconds -= 1
-            } else {
-                onCompleteSet()
+            when {
+                timerSeconds > 1 -> {
+                    delay(1000)
+                    onTimerSecondsChanged(timerSeconds - 1)
+                }
+                timerSeconds == 1 -> {
+                    delay(1000)
+                    onCompleteSet()
+                }
             }
         }
         LaunchedEffect(item.template.name, item.completed, timerSeconds) {
@@ -970,10 +1007,12 @@ private fun ManualEntryScreen(
     items: List<ManualExerciseCount>,
     dayOffset: Int,
     skipCooldown: Boolean,
+    durationMinutes: Int,
     restSeconds: Int,
     onBack: () -> Unit,
     onDayOffsetChanged: (Int) -> Unit,
     onSkipCooldownChanged: (Boolean) -> Unit,
+    onDurationChanged: (Int) -> Unit,
     onSetsChanged: (ExerciseTemplate, Int) -> Unit,
     onSave: () -> Unit
 ) {
@@ -1007,11 +1046,42 @@ private fun ManualEntryScreen(
 
         Spacer(Modifier.height(14.dp))
 
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            OutlinedButton(
+                onClick = { onDayOffsetChanged(dayOffset - 1) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(54.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Earlier", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            OutlinedButton(
+                onClick = { onDayOffsetChanged(dayOffset + 1) },
+                enabled = dayOffset < 0,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(54.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Later", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
         ControlStrip(
-            label = "Workout date",
-            value = dateLabel,
-            onMinus = { onDayOffsetChanged(dayOffset - 1) },
-            onPlus = { onDayOffsetChanged(dayOffset + 1) }
+            label = "Duration",
+            value = "${durationMinutes}m",
+            onMinus = { onDurationChanged(durationMinutes - 5) },
+            onPlus = { onDurationChanged(durationMinutes + 5) }
         )
 
         Spacer(Modifier.height(12.dp))
@@ -1175,7 +1245,7 @@ private fun AnalyticsPanel(summary: AnalyticsSummary) {
         )
         MetricBand(
             leftValue = formatDuration(summary.totalDurationSeconds),
-            leftLabel = "training time",
+            leftLabel = "recorded time",
             rightValue = "${summary.endedEarlyCount}",
             rightLabel = "ended early"
         )
@@ -1203,6 +1273,13 @@ private fun AnalyticsPanel(summary: AnalyticsSummary) {
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (summary.manualSessionCount > 0) {
+                    Text(
+                        "${summary.manualSessionCount} manual entries may only include entered duration.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 MiniDayGrid(summary.dayTotals)
             }
@@ -1276,7 +1353,7 @@ private fun PeriodAnalyticsCard(period: PeriodAnalytics) {
             Spacer(Modifier.height(10.dp))
             MetricBand(
                 leftValue = formatDuration(period.durationSeconds),
-                leftLabel = "duration",
+                leftLabel = "recorded time",
                 rightValue = "${period.skippedCooldownSeconds}s",
                 rightLabel = "skipped cooldown"
             )
@@ -1972,6 +2049,7 @@ private fun buildAnalyticsSummary(sessions: List<SessionRecord>): AnalyticsSumma
         totalCooldownSeconds = sessions.sumOf { it.actualCooldownSeconds },
         totalSkippedCooldownSeconds = sessions.sumOf { it.skippedCooldownSeconds },
         endedEarlyCount = sessions.count { it.endedEarly },
+        manualSessionCount = sessions.count { it.durationSeconds == 0 && it.startedAt == it.endedAt },
         todaySets = sessions.filter { it.startedAt >= todayStart }.sumOf { it.completedSets },
         weekSets = sessions.filter { it.startedAt >= weekStart }.sumOf { it.completedSets },
         monthSets = sessions.filter { it.startedAt >= monthStart }.sumOf { it.completedSets },

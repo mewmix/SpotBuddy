@@ -19,11 +19,13 @@ data class SavedAppState(
     val currentIndex: Int,
     val restSeconds: Int,
     val remainingSeconds: Int,
+    val activeTimerSeconds: Int,
     val sessionStartedAt: Long,
     val actualCooldownSeconds: Int,
     val skippedCooldowns: Int,
     val skippedCooldownSeconds: Int,
-    val sessionEndedEarly: Boolean
+    val sessionEndedEarly: Boolean,
+    val savedSessionId: Long
 )
 
 class SpotBuddyPreferences(context: Context) {
@@ -35,11 +37,13 @@ class SpotBuddyPreferences(context: Context) {
             .put("currentIndex", state.currentIndex)
             .put("restSeconds", state.restSeconds)
             .put("remainingSeconds", state.remainingSeconds)
+            .put("activeTimerSeconds", state.activeTimerSeconds)
             .put("sessionStartedAt", state.sessionStartedAt)
             .put("actualCooldownSeconds", state.actualCooldownSeconds)
             .put("skippedCooldowns", state.skippedCooldowns)
             .put("skippedCooldownSeconds", state.skippedCooldownSeconds)
             .put("sessionEndedEarly", state.sessionEndedEarly)
+            .put("savedSessionId", state.savedSessionId)
             .put("items", JSONArray().apply {
                 state.items.forEach { item ->
                     put(
@@ -78,11 +82,13 @@ class SpotBuddyPreferences(context: Context) {
                 currentIndex = root.optInt("currentIndex", 0),
                 restSeconds = root.optInt("restSeconds", 45),
                 remainingSeconds = root.optInt("remainingSeconds", 45),
+                activeTimerSeconds = root.optInt("activeTimerSeconds", 0),
                 sessionStartedAt = root.optLong("sessionStartedAt", 0L),
                 actualCooldownSeconds = root.optInt("actualCooldownSeconds", 0),
                 skippedCooldowns = root.optInt("skippedCooldowns", 0),
                 skippedCooldownSeconds = root.optInt("skippedCooldownSeconds", 0),
-                sessionEndedEarly = root.optBoolean("sessionEndedEarly", false)
+                sessionEndedEarly = root.optBoolean("sessionEndedEarly", false),
+                savedSessionId = root.optLong("savedSessionId", 0L)
             )
         }.getOrNull()
     }

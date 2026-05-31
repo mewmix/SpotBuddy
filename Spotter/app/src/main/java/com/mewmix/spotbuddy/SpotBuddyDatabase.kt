@@ -52,8 +52,19 @@ class SpotBuddyDatabase(context: Context) :
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) {
-            db.execSQL("ALTER TABLE sessions ADD COLUMN ended_early INTEGER NOT NULL DEFAULT 0")
+        db.beginTransaction()
+        try {
+            if (oldVersion < 2) {
+                addColumnIfMissing(
+                    db = db,
+                    tableName = "sessions",
+                    columnName = "ended_early",
+                    definition = "INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
     }
 
@@ -134,5 +145,26 @@ class SpotBuddyDatabase(context: Context) :
                 holdSeconds = item.getInt("holdSeconds")
             )
         }
+    }
+
+    private fun addColumnIfMissing(
+        db: SQLiteDatabase,
+        tableName: String,
+        columnName: String,
+        definition: String
+    ) {
+        if (!columnExists(db, tableName, columnName)) {
+            db.execSQL("ALTER TABLE $tableName ADD COLUMN $columnName $definition")
+        }
+    }
+
+    private fun columnExists(db: SQLiteDatabase, tableName: String, columnName: String): Boolean {
+        db.rawQuery("PRAGMA table_info($tableName)", null).use { cursor ->
+            val nameIndex = cursor.getColumnIndex("name")
+            while (cursor.moveToNext()) {
+                if (cursor.getString(nameIndex) == columnName) return true
+            }
+        }
+        return false
     }
 }
